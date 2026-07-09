@@ -67,15 +67,17 @@ def load_direction(path) -> tuple[np.ndarray, dict]:
     return d, meta
 
 
-def load_probes(path) -> list[str]:
+def load_prompt_prefixes(path) -> list[str]:
     obj = json.loads(Path(path).read_text(encoding="utf-8"))
     return obj["prompts"] if isinstance(obj, dict) else list(obj)
 
 
 # %%
+# Real recovered direction lives under data/; the smoke direction under
+# data_local/ (machine-local scratch), matching recover_direction.py's tiers.
 DEFAULT_DIRECTION_CANDIDATES = [
     REPO_ROOT / "data" / "directions" / "d_olmo3_L24_logistic.recovered.npz",
-    REPO_ROOT / "data" / "directions" / "d_dev_smoke.npz",
+    REPO_ROOT / "data_local" / "directions" / "d_dev_smoke.npz",
 ]
 DEFAULT_SEASON_FILE = ARENA_ROOT / "data" / "probes" / "season2.json"
 
@@ -85,8 +87,8 @@ def pick_default_direction() -> Path:
         if p.exists():
             return p
     raise FileNotFoundError(
-        "no recovered direction found under data/directions/ — run recover_direction.py "
-        "first, or pass --direction explicitly"
+        "no direction found under data/directions/ or data_local/directions/ — run "
+        "recover_direction.py first, or pass --direction explicitly"
     )
 
 
@@ -116,11 +118,13 @@ args = parse_args()
 
 direction_path = args.direction or pick_default_direction()
 d, meta = load_direction(direction_path)
-probes = load_probes(args.season_file)
+prefixes = load_prompt_prefixes(args.season_file)
 
 print(f"direction: {direction_path}")
-print(f"  model_id={meta.get('model_id')} layer={meta.get('layer')} placeholder={meta.get('placeholder')}")
-print(f"probes: {len(probes)} from {args.season_file}")
+print(
+    f"  model_id={meta.get('model_id')} layer={meta.get('layer')} placeholder={meta.get('placeholder')}"
+)
+print(f"prefixes: {len(prefixes)} from {args.season_file}")
 if meta.get("placeholder"):
     print("[warning] using a PLACEHOLDER direction -- scores are not meaningful yet.")
 
@@ -150,7 +154,7 @@ tokenizer.pad_token = tokenizer.eos_token
 # hidden_states[i+1] is decoder layer i's output, i.e. hidden_states[layer+1]
 # == model.model.layers[layer].output, matching the last-token read the live
 # scorer performs via NDIF/nnsight.
-CACHE_DIR = REPO_ROOT / "data" / "cache" / "acts" / MODEL_NAME.replace("/", "_")
+CACHE_DIR = REPO_ROOT / ".cache" / "acts" / MODEL_NAME.replace("/", "_")
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -186,7 +190,7 @@ def get_resid(text: str) -> np.ndarray:
 # so the printed breakdown and the mean are computed by the identical
 # formula the live scorer uses.
 shifts = []
-for p in tqdm(probes, desc="scoring probes"):
+for p in tqdm(prefixes, desc="scoring prefixes"):
     with_seq = cosine(get_resid(compose(args.prompt, p)), d)
     base = cosine(get_resid(p), d)
     shift = with_seq - base
@@ -194,12 +198,22 @@ for p in tqdm(probes, desc="scoring probes"):
     print(f"  {shift:+.4f}  {p!r}")
 
 mean_score = float(np.mean(shifts))
-print(f"\nmean probe score (cosine_steering_shift) over {len(probes)} probes: {mean_score:.4f}")
+print(
+    f"\nmean probe score (cosine_steering_shift) over {len(prefixes)} tests: {mean_score:.4f}"
+)
 
 # %%
-OUT_DIR = REPO_ROOT / "data" / "scores"
+# Score lands in the same tier as the direction it was computed from: a smoke
+# direction (data_local/) yields a smoke score, a real one (data/) a real score.
+ARTEFACT_ROOT = REPO_ROOT / (
+    "data_local" if "data_local" in direction_path.resolve().parts else "data"
+)
+OUT_DIR = ARTEFACT_ROOT / "scores"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
-out_path = OUT_DIR / f"score_{hashlib.sha256(args.prompt.encode('utf-8')).hexdigest()[:12]}.json"
+out_path = (
+    OUT_DIR
+    / f"score_{hashlib.sha256(args.prompt.encode('utf-8')).hexdigest()[:12]}.json"
+)
 out_path.write_text(
     json.dumps(
         {
@@ -207,7 +221,7 @@ out_path.write_text(
             "direction": str(direction_path),
             "direction_meta": meta,
             "season_file": str(args.season_file),
-            "per_probe_shift": dict(zip(probes, shifts)),
+            "per_probe_shift": dict(zip(prefixes, shifts)),
             "mean_score": mean_score,
         },
         indent=2,

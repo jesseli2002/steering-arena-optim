@@ -6,8 +6,10 @@
 # computed activations (no NDIF). See PROJECT_SPEC.md §11.3-11.4 in steering-arena/
 # for the spec this recipe follows.
 #
-# `steering-arena/` is read-only reference (CLAUDE.md) — never written to. All
-# outputs land under `steering-arena-optim/data/`.
+# `steering-arena/` is read-only reference (CLAUDE.md) — never written to.
+# Outputs land under `data/` (real run) or `data_local/` (--smoke); regenerable
+# activation caches go under `.cache/`. See the output-locations section below.
+import argparse
 import datetime as dt
 import hashlib
 import json
@@ -111,10 +113,34 @@ if t.cuda.is_available():
     t.cuda.set_device(0)  # ??? Possibly needed?
 
 # %%
-# Set to true when developing locally (to test pipeline); smaller models are used to fit on the GPU
-LOCAL_DEV = True
+# -- Smoke vs. real run -------------------------------------------------------
+# Smoke mode uses a small model that fits anywhere and writes throwaway
+# artefacts under data_local/. The real run pulls the 32B model (needs a big
+# GPU) and writes the artefacts worth keeping under data/.
+#
+# Resolution order (first that applies wins):
+#   1. CLI:  --smoke / --no-smoke
+#   2. env:  SMOKE=1/0  (handy for VS Code interactive cells, where argv has no
+#            flag -- e.g. export SMOKE=0 for interactive real-model debugging)
+#   3. default: smoke (never auto-load the 32B model by accident)
+# parse_known_args so Jupyter/ipykernel's injected argv doesn't blow up.
+def _resolve_smoke() -> bool:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--smoke", dest="smoke", action="store_true", default=None)
+    parser.add_argument("--no-smoke", dest="smoke", action="store_false")
+    args, _ = parser.parse_known_args()
+    if args.smoke is not None:
+        return args.smoke
+    env = os.getenv("SMOKE")
+    if env is not None:
+        return env.strip().lower() not in ("0", "false", "no", "")
+    return True
 
-if LOCAL_DEV:
+
+SMOKE = _resolve_smoke()
+print(f"run mode: {'SMOKE (small model, data_local/)' if SMOKE else 'REAL (32B, data/)'}")
+
+if SMOKE:
     MODEL_NAME = "openai-community/gpt2-xl"  # 1.5B params, ~6GB
     LAYER = 6  # arbitrary for the smoke test
     max_memory = None
@@ -122,7 +148,7 @@ else:
     MODEL_NAME = "allenai/Olmo-3-1125-32B"
     LAYER = 24  # pinned by steering-arena/app/config.py (Season 2)
     max_memory = None
-    # max_memory = { # TODO - fill out once VastAI setup is chosen
+    # max_memory = { # TODO - fill out once the multi-GPU setup is chosen
     #     0: "5GiB",  # reserve room for experiments
     #     1: "10GiB",
     #     2: "10GiB",
@@ -161,30 +187,32 @@ assert (
 
 # %%
 # ── Output locations (all under steering-arena-optim/, never steering-arena/) ──
-CACHE_DIR = REPO_ROOT / "data" / "cache" / "acts" / MODEL_NAME.replace("/", "_")
+# Three tiers:
+#   .cache/       regenerable activation caches -- machine-local, throwaway
+#   data/         real-run artefacts -- the ones worth keeping
+#   data_local/   smoke-test artefacts -- machine-local scratch
+# Activations are keyed by model name (dir + hash), so smoke (gpt2-xl) and real
+# (Olmo-32B) caches never collide even though they share .cache/acts/.
+CACHE_DIR = REPO_ROOT / ".cache" / "acts" / MODEL_NAME.replace("/", "_")
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
-OUT_DIR = REPO_ROOT / "data" / "directions"
+
+ARTEFACT_ROOT = REPO_ROOT / ("data_local" if SMOKE else "data")
+OUT_DIR = ARTEFACT_ROOT / "directions"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
+
 D_VERSION = "olmo3_L24_logistic"
-OUT_NPZ = OUT_DIR / "d_olmo3_L24_logistic.recovered.npz"
-OUT_REPORT = OUT_DIR / "d_olmo3_L24_logistic.recovered.report.json"
 SHIPPED_NPZ = ARENA_ROOT / "data" / "directions" / "d_olmo3_L24_logistic.npz"
 SHIPPED_AUDIT = (
     ARENA_ROOT / "data" / "directions" / "d_olmo3_L24_logistic.confound_audit.json"
 )
 SEED_PAIRS = ARENA_ROOT / "data" / "seed_pairs.jsonl"
 
-if LOCAL_DEV:
-    CACHE_DIR = (
-        REPO_ROOT
-        / "data"
-        / "cache"
-        / "acts"
-        / (MODEL_NAME.replace("/", "_") + "_LOCAL_DEV")
-    )
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+if SMOKE:
     OUT_NPZ = OUT_DIR / "d_dev_smoke.npz"
     OUT_REPORT = OUT_DIR / "d_dev_smoke.report.json"
+else:
+    OUT_NPZ = OUT_DIR / "d_olmo3_L24_logistic.recovered.npz"
+    OUT_REPORT = OUT_DIR / "d_olmo3_L24_logistic.recovered.report.json"
 
 
 # %%
@@ -301,7 +329,7 @@ report: dict = {
     "model_id": MODEL_NAME,
     "layer": LAYER,
     "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-    "local_dev": LOCAL_DEV,
+    "smoke": SMOKE,
 }
 
 SEP_MIN = 0.70
@@ -478,7 +506,7 @@ meta = {
 np.savez(OUT_NPZ, d=d_f32, meta=np.array(json.dumps(meta)))
 print(f"wrote {OUT_NPZ}")
 
-if not LOCAL_DEV and SHIPPED_NPZ.exists():
+if not SMOKE and SHIPPED_NPZ.exists():
     shipped = np.load(SHIPPED_NPZ, allow_pickle=True)
     d_shipped = unit(np.asarray(shipped["d"], dtype=np.float64))
     shipped_meta = json.loads(str(shipped["meta"]))
@@ -514,13 +542,13 @@ if not LOCAL_DEV and SHIPPED_NPZ.exists():
     }
     print(f"\n=== REPRODUCTION VERDICT ===")
     print(f"cosine(recovered, shipped) = {cos_vs_shipped:.6f}")
-elif not LOCAL_DEV:
+elif not SMOKE:
     print(
         f"\nshipped comparison file not found at {SHIPPED_NPZ} — skipping reproduction verdict"
     )
 else:
     print(
-        "\n(LOCAL_DEV smoke test — skipping shipped-file comparison; run with LOCAL_DEV=False for the real recovery + verdict)"
+        "\n(smoke test — skipping shipped-file comparison; run with --no-smoke for the real recovery + verdict)"
     )
 
 OUT_REPORT.write_text(json.dumps(report, indent=2))
