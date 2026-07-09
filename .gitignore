@@ -1,3 +1,9 @@
 steering-arena
 
 .claude
+.env
+
+__pycache__
+
+# Artefacts
+data
