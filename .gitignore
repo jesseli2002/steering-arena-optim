@@ -5,8 +5,9 @@ steering-arena
 
 __pycache__
 
-# Artefacts
+# Artefacts on big model
 data
+# Artefacts for smoke-test model (only locally listed)
 data_local
 
 # Regenerable caches (activations, etc.) -- machine-local, never committed
