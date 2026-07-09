@@ -67,7 +67,7 @@ def load_direction(path) -> tuple[np.ndarray, dict]:
     return d, meta
 
 
-def load_probes(path) -> list[str]:
+def load_prompt_prefixes(path) -> list[str]:
     obj = json.loads(Path(path).read_text(encoding="utf-8"))
     return obj["prompts"] if isinstance(obj, dict) else list(obj)
 
@@ -118,11 +118,13 @@ args = parse_args()
 
 direction_path = args.direction or pick_default_direction()
 d, meta = load_direction(direction_path)
-probes = load_probes(args.season_file)
+prefixes = load_prompt_prefixes(args.season_file)
 
 print(f"direction: {direction_path}")
-print(f"  model_id={meta.get('model_id')} layer={meta.get('layer')} placeholder={meta.get('placeholder')}")
-print(f"probes: {len(probes)} from {args.season_file}")
+print(
+    f"  model_id={meta.get('model_id')} layer={meta.get('layer')} placeholder={meta.get('placeholder')}"
+)
+print(f"prefixes: {len(prefixes)} from {args.season_file}")
 if meta.get("placeholder"):
     print("[warning] using a PLACEHOLDER direction -- scores are not meaningful yet.")
 
@@ -188,7 +190,7 @@ def get_resid(text: str) -> np.ndarray:
 # so the printed breakdown and the mean are computed by the identical
 # formula the live scorer uses.
 shifts = []
-for p in tqdm(probes, desc="scoring probes"):
+for p in tqdm(prefixes, desc="scoring prefixes"):
     with_seq = cosine(get_resid(compose(args.prompt, p)), d)
     base = cosine(get_resid(p), d)
     shift = with_seq - base
@@ -196,7 +198,9 @@ for p in tqdm(probes, desc="scoring probes"):
     print(f"  {shift:+.4f}  {p!r}")
 
 mean_score = float(np.mean(shifts))
-print(f"\nmean probe score (cosine_steering_shift) over {len(probes)} probes: {mean_score:.4f}")
+print(
+    f"\nmean probe score (cosine_steering_shift) over {len(prefixes)} tests: {mean_score:.4f}"
+)
 
 # %%
 # Score lands in the same tier as the direction it was computed from: a smoke
@@ -206,7 +210,10 @@ ARTEFACT_ROOT = REPO_ROOT / (
 )
 OUT_DIR = ARTEFACT_ROOT / "scores"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
-out_path = OUT_DIR / f"score_{hashlib.sha256(args.prompt.encode('utf-8')).hexdigest()[:12]}.json"
+out_path = (
+    OUT_DIR
+    / f"score_{hashlib.sha256(args.prompt.encode('utf-8')).hexdigest()[:12]}.json"
+)
 out_path.write_text(
     json.dumps(
         {
@@ -214,7 +221,7 @@ out_path.write_text(
             "direction": str(direction_path),
             "direction_meta": meta,
             "season_file": str(args.season_file),
-            "per_probe_shift": dict(zip(probes, shifts)),
+            "per_probe_shift": dict(zip(prefixes, shifts)),
             "mean_score": mean_score,
         },
         indent=2,
