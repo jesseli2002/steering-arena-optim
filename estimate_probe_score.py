@@ -3,21 +3,22 @@
 # using the direction recovered by recover_direction.py and the 16 prompts in
 # steering-arena/data/probes/season2.json.
 #
-# Composition and scoring math are imported directly from the read-only
-# steering-arena/app/scoring.py (never re-typed) for exact parity with the
-# live scorer:
+# Composition and scoring math (compose/cosine/load_direction/load_probes)
+# are copied verbatim from the read-only steering-arena/app/scoring.py, same
+# convention as recover_direction.py copying from extract_direction.py, for
+# exact parity with the live scorer without importing arena code:
 #   score(seq) = mean over probes p of
 #       cos(R_L(seq + " " + p)[-1], d) - cos(R_L(p)[-1], d)
-# where seq+" "+p is `app.scoring.compose(seq, p)` (plain space-joined
-# concatenation, no chat template) and R_L(...)[-1] is the last-token
-# layer-L residual stream. See app/scoring.py and PROJECT_SPEC.md Section 5.
+# where seq+" "+p is compose(seq, p) (plain space-joined concatenation, no
+# chat template) and R_L(...)[-1] is the last-token layer-L residual stream.
+# See app/scoring.py and PROJECT_SPEC.md Section 5.
 #
-# `steering-arena/` is read-only reference (CLAUDE.md) — never written to.
+# `steering-arena/` is read-only reference (CLAUDE.md) — never written to,
+# never imported from.
 import argparse
 import hashlib
 import json
 import os
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -29,11 +30,6 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 load_dotenv()
 
-# %%
-# Wire up the read-only import from steering-arena/app/scoring.py. That module
-# is pure numpy/json (no torch, no nnsight, no pydantic-settings) and only
-# reaches for heavy deps inside its own CLI entry point, so importing it here
-# is safe and light.
 REPO_ROOT = Path(__file__).resolve().parent
 ARENA_ROOT = REPO_ROOT / "steering-arena"
 
@@ -43,8 +39,38 @@ assert (
     ARENA_ROOT.is_dir()
 ), f"expected read-only steering-arena clone at {ARENA_ROOT} (or set STEERING_ARENA_DIR)"
 
-sys.path.insert(0, str(ARENA_ROOT))
-from app.scoring import compose, cosine, load_direction, load_probes  # noqa: E402
+
+# %%
+# Copy implementations from steering-arena/app/scoring.py
+def cosine(a: np.ndarray, b: np.ndarray) -> float:
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+    na = float(np.linalg.norm(a))
+    nb = float(np.linalg.norm(b))
+    if na == 0.0 or nb == 0.0:
+        raise ValueError("cosine of a zero vector is undefined")
+    return float(np.dot(a, b) / (na * nb))
+
+
+def compose(seq: str, probe: str) -> str:
+    """How a candidate sequence is prepended to a probe. Fixed for determinism."""
+    return f"{seq} {probe}"
+
+
+def load_direction(path) -> tuple[np.ndarray, dict]:
+    """Load `d` (float32) and its metadata from a d_<version>.npz file."""
+    data = np.load(path, allow_pickle=True)
+    d = np.asarray(data["d"], dtype=np.float32)
+    meta = {}
+    if "meta" in data:
+        meta = json.loads(str(data["meta"]))
+    return d, meta
+
+
+def load_probes(path) -> list[str]:
+    obj = json.loads(Path(path).read_text(encoding="utf-8"))
+    return obj["prompts"] if isinstance(obj, dict) else list(obj)
+
 
 # %%
 DEFAULT_DIRECTION_CANDIDATES = [
@@ -157,8 +183,8 @@ def get_resid(text: str) -> np.ndarray:
 
 # %%
 # Per-probe shift, mirroring app.scoring.steering_shift_score's loop exactly
-# (compose + cosine, both imported) so the printed breakdown and the mean are
-# computed by the identical formula the live scorer uses.
+# so the printed breakdown and the mean are computed by the identical
+# formula the live scorer uses.
 shifts = []
 for p in tqdm(probes, desc="scoring probes"):
     with_seq = cosine(get_resid(compose(args.prompt, p)), d)
