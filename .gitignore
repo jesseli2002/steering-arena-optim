@@ -7,3 +7,12 @@ __pycache__
 
 # Artefacts
 data
+data_local
+
+# Regenerable caches (activations, etc.) -- machine-local, never committed
+.cache
+
+# Personal remote-dev config (mutagen) -- ignored rather than shipped, so the
+# specific sync setup isn't enforced on anyone reproducing this work
+.mutagen.yml
+.mutagen.yml.lock

@@ -73,9 +73,11 @@ def load_probes(path) -> list[str]:
 
 
 # %%
+# Real recovered direction lives under data/; the smoke direction under
+# data_local/ (machine-local scratch), matching recover_direction.py's tiers.
 DEFAULT_DIRECTION_CANDIDATES = [
     REPO_ROOT / "data" / "directions" / "d_olmo3_L24_logistic.recovered.npz",
-    REPO_ROOT / "data" / "directions" / "d_dev_smoke.npz",
+    REPO_ROOT / "data_local" / "directions" / "d_dev_smoke.npz",
 ]
 DEFAULT_SEASON_FILE = ARENA_ROOT / "data" / "probes" / "season2.json"
 
@@ -85,8 +87,8 @@ def pick_default_direction() -> Path:
         if p.exists():
             return p
     raise FileNotFoundError(
-        "no recovered direction found under data/directions/ — run recover_direction.py "
-        "first, or pass --direction explicitly"
+        "no direction found under data/directions/ or data_local/directions/ — run "
+        "recover_direction.py first, or pass --direction explicitly"
     )
 
 
@@ -150,7 +152,7 @@ tokenizer.pad_token = tokenizer.eos_token
 # hidden_states[i+1] is decoder layer i's output, i.e. hidden_states[layer+1]
 # == model.model.layers[layer].output, matching the last-token read the live
 # scorer performs via NDIF/nnsight.
-CACHE_DIR = REPO_ROOT / "data" / "cache" / "acts" / MODEL_NAME.replace("/", "_")
+CACHE_DIR = REPO_ROOT / ".cache" / "acts" / MODEL_NAME.replace("/", "_")
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -197,7 +199,12 @@ mean_score = float(np.mean(shifts))
 print(f"\nmean probe score (cosine_steering_shift) over {len(probes)} probes: {mean_score:.4f}")
 
 # %%
-OUT_DIR = REPO_ROOT / "data" / "scores"
+# Score lands in the same tier as the direction it was computed from: a smoke
+# direction (data_local/) yields a smoke score, a real one (data/) a real score.
+ARTEFACT_ROOT = REPO_ROOT / (
+    "data_local" if "data_local" in direction_path.resolve().parts else "data"
+)
+OUT_DIR = ARTEFACT_ROOT / "scores"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 out_path = OUT_DIR / f"score_{hashlib.sha256(args.prompt.encode('utf-8')).hexdigest()[:12]}.json"
 out_path.write_text(
