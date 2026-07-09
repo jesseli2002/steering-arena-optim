@@ -5,9 +5,6 @@ This project is to try to optimize performance on Steering Arena, a public compe
 Do not search for API keys/tokens oustide of this directory.
 
 ## Notes on sandbox environment
-- This environment runs commands through a sandbox that permission-checks each Bash
-invocation. Any command containing shell variable expansion that can't be statically
-verified (e.g. `$VAR`, `$$`, `for i in "$@"; do ...$i...; done`) falls back to a
-permission prompt even when the command is safe, because the sandbox can't confirm
-what the expansion will resolve to. Where practical, substitute the literal/known
-value directly instead of using a variable or loop, to avoid unnecessary prompts.
+- This environment runs commands through a sandbox that permission-checks each Bash invocation. Any command containing shell variable expansion that can't be statically verified (e.g. `$VAR`, `$$`, `for i in "$@"; do ...$i...; done`) falls back to a permission prompt even when the command is safe, because the sandbox can't confirm what the expansion will resolve to. Solutions:
+    - Substitute the literal/known value directly instead of using a variable or loop, to avoid unnecessary prompts.
+    - To find environment variables, use `printenv ENV_VAR` instead of `echo $ENV_VAR`
