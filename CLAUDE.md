@@ -1,6 +1,6 @@
 This project is to try to optimize performance on Steering Arena, a public competition to try to find a prompt that leads to the highest score on a given probe.
 
-`steering-arena` is a cloned copy of the source code for Steering Arena. It's kept for reference but should not be modified.
+`steering-arena` is a cloned copy of the source code for Steering Arena. It's kept for reference but should not be modified or imported from.
 
 Do not search for API keys/tokens oustide of this directory.
 
