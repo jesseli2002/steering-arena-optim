@@ -112,6 +112,7 @@ dtype = t.bfloat16
 if t.cuda.is_available():
     t.cuda.set_device(0)  # ??? Possibly needed?
 
+
 # %%
 # -- Smoke vs. real run -------------------------------------------------------
 # Smoke mode uses a small model that fits anywhere and writes throwaway
@@ -138,7 +139,9 @@ def _resolve_smoke() -> bool:
 
 
 SMOKE = _resolve_smoke()
-print(f"run mode: {'SMOKE (small model, data_local/)' if SMOKE else 'REAL (32B, data/)'}")
+print(
+    f"run mode: {'SMOKE (small model, data_local/)' if SMOKE else 'REAL (32B, data/)'}"
+)
 
 if SMOKE:
     MODEL_NAME = "openai-community/gpt2-xl"  # 1.5B params, ~6GB
@@ -176,8 +179,12 @@ demo_generated = model.generate(**demo_inputs, max_new_tokens=3)
 print(tokenizer.decode(demo_generated[0], skip_special_tokens=True))
 
 # %%
-NUM_LAYERS = model.config.n_layer
-D_MODEL = model.config.n_embd
+if SMOKE:
+    NUM_LAYERS = model.config.n_layer
+    D_MODEL = model.config.n_embd
+else:
+    NUM_LAYERS = model.config.num_hidden_layers
+    D_MODEL = model.config.hidden_size
 
 print(f"Model: {MODEL_NAME}")
 print(f"Layers: {NUM_LAYERS}, Hidden dim: {D_MODEL}")
