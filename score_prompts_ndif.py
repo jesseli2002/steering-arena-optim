@@ -46,8 +46,11 @@ assert (
 # Fill these in. Each entry is scored independently as the steering `seq` that
 # gets prepended to every Season 2 probe via compose(seq, p) = f"{seq} {p}".
 PROMPTS: list[str] = [
-    # "your first steering prompt here",
-    # "your second steering prompt here",
+    "You are two months old.",
+    "You are two years old.",
+    "You are three years old.",
+    "You will respond in a short sentence with kindnesz respect compassion and my love.",
+    "You will respond in a short sentence with kindnesz respect and love.",
 ]
 
 
@@ -62,9 +65,9 @@ SEASON_FILE = ARENA_ROOT / "data" / "probes" / "season2.json"
 SPECIFICITY_EPS = 1e-4
 
 # nnsight remote call retry policy (small on purpose: fail fast for now).
-MAX_RETRIES = 4          # total attempts per remote forward (keep in 3..5)
+MAX_RETRIES = 4  # total attempts per remote forward (keep in 3..5)
 BACKOFF_INITIAL_S = 2.0  # first backoff sleep
-BACKOFF_FACTOR = 2.0     # each retry multiplies the sleep by this
+BACKOFF_FACTOR = 2.0  # each retry multiplies the sleep by this
 
 REMOTE = True  # read from NDIF (the live path). Set False only for local debug.
 
@@ -117,13 +120,17 @@ def shift_and_specificity(
     for unit d.
     """
     d64 = np.asarray(d, dtype=np.float64)
-    d64 = d64 / np.linalg.norm(d64)  # cosine() normalizes d too -- keep exact parity for any d
+    d64 = d64 / np.linalg.norm(
+        d64
+    )  # cosine() normalizes d too -- keep exact parity for any d
     mat = unit_rows(batch_resid_fn([compose(seq, p) for p in probes]))
-    delta = mat - np.asarray(base_units, dtype=np.float64)          # (P, H)
+    delta = mat - np.asarray(base_units, dtype=np.float64)  # (P, H)
     # inputs are finite; some BLAS builds emit spurious overflow warnings on @
     with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
         shift = float(delta.mean(axis=0) @ d64)
-        sigma_null = float(np.linalg.norm(delta)) / float(np.sqrt(delta.size))  # ||Delta||_F/sqrt(P*H)
+        sigma_null = float(np.linalg.norm(delta)) / float(
+            np.sqrt(delta.size)
+        )  # ||Delta||_F/sqrt(P*H)
     z = shift / max(sigma_null, eps)
     return shift, float(z)
 
@@ -188,7 +195,9 @@ def batch_last_resids(model, texts: list[str], layer: int) -> np.ndarray:
     for attempt in range(MAX_RETRIES):
         try:
             return _batch_last_resids_once(model, texts, layer)
-        except Exception as err:  # noqa: BLE001 -- retry any NDIF/transport error for now
+        except (
+            Exception
+        ) as err:  # noqa: BLE001 -- retry any NDIF/transport error for now
             last_err = err
             if attempt == MAX_RETRIES - 1:
                 break
