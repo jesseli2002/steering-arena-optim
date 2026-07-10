@@ -94,9 +94,9 @@ def pick_default_direction() -> Path:
 
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(
-        description="Estimate the mean Season 2 probe score for a steering prompt."
+        description="Interactively estimate the mean Season 2 probe score for "
+        "steering prompts, loading the model once and looping over stdin."
     )
-    ap.add_argument("prompt", help="the candidate steering sequence to score")
     ap.add_argument(
         "--direction",
         type=Path,
@@ -189,42 +189,99 @@ def get_resid(text: str) -> np.ndarray:
 # Per-probe shift, mirroring app.scoring.steering_shift_score's loop exactly
 # so the printed breakdown and the mean are computed by the identical
 # formula the live scorer uses.
-shifts = []
-for p in tqdm(prefixes, desc="scoring prefixes"):
-    with_seq = cosine(get_resid(compose(args.prompt, p)), d)
-    base = cosine(get_resid(p), d)
-    shift = with_seq - base
-    shifts.append(shift)
-    print(f"  {shift:+.4f}  {p!r}")
+def score_prompt(prompt: str) -> None:
+    shifts = []
+    for p in tqdm(prefixes, desc="scoring prefixes"):
+        with_seq = cosine(get_resid(compose(prompt, p)), d)
+        base = cosine(get_resid(p), d)
+        shift = with_seq - base
+        shifts.append(shift)
+        print(f"  {shift:+.4f}  {p!r}")
 
-mean_score = float(np.mean(shifts))
-print(
-    f"\nmean probe score (cosine_steering_shift) over {len(prefixes)} tests: {mean_score:.4f}"
-)
+    mean_score = float(np.mean(shifts))
+    print(
+        f"\nmean probe score (cosine_steering_shift) over {len(prefixes)} tests: {mean_score:.4f}"
+    )
+
+    # Score lands in the same tier as the direction it was computed from: a
+    # smoke direction (data_local/) yields a smoke score, a real one (data/)
+    # a real score.
+    artefact_root = REPO_ROOT / (
+        "data_local" if "data_local" in direction_path.resolve().parts else "data"
+    )
+    out_dir = artefact_root / "scores"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = (
+        out_dir / f"score_{hashlib.sha256(prompt.encode('utf-8')).hexdigest()[:12]}.json"
+    )
+    out_path.write_text(
+        json.dumps(
+            {
+                "prompt": prompt,
+                "direction": str(direction_path),
+                "direction_meta": meta,
+                "season_file": str(args.season_file),
+                "per_probe_shift": dict(zip(prefixes, shifts)),
+                "mean_score": mean_score,
+            },
+            indent=2,
+        )
+    )
+    print(f"wrote {out_path}")
+
+
+def load_new_direction(path_str: str) -> None:
+    global direction_path, d, meta, LAYER, MODEL_NAME, tokenizer, model, CACHE_DIR
+
+    new_path = Path(path_str).expanduser()
+    if not new_path.exists():
+        print(f"[error] direction file not found: {new_path}")
+        return
+    new_d, new_meta = load_direction(new_path)
+    new_model_name = new_meta["model_id"]
+
+    if new_model_name != MODEL_NAME:
+        print(f"[reloading model] {MODEL_NAME} -> {new_model_name}")
+        MODEL_NAME = new_model_name
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, token=HF_TOKEN)
+        model = AutoModelForCausalLM.from_pretrained(
+            MODEL_NAME, dtype=dtype, device_map="auto", token=HF_TOKEN
+        )
+        tokenizer.pad_token = tokenizer.eos_token
+        CACHE_DIR = REPO_ROOT / ".cache" / "acts" / MODEL_NAME.replace("/", "_")
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+    direction_path, d, meta = new_path, new_d, new_meta
+    LAYER = int(meta["layer"])
+
+    print(f"direction: {direction_path}")
+    print(
+        f"  model_id={meta.get('model_id')} layer={meta.get('layer')} placeholder={meta.get('placeholder')}"
+    )
+    if meta.get("placeholder"):
+        print("[warning] using a PLACEHOLDER direction -- scores are not meaningful yet.")
+
 
 # %%
-# Score lands in the same tier as the direction it was computed from: a smoke
-# direction (data_local/) yields a smoke score, a real one (data/) a real score.
-ARTEFACT_ROOT = REPO_ROOT / (
-    "data_local" if "data_local" in direction_path.resolve().parts else "data"
-)
-OUT_DIR = ARTEFACT_ROOT / "scores"
-OUT_DIR.mkdir(parents=True, exist_ok=True)
-out_path = (
-    OUT_DIR
-    / f"score_{hashlib.sha256(args.prompt.encode('utf-8')).hexdigest()[:12]}.json"
-)
-out_path.write_text(
-    json.dumps(
-        {
-            "prompt": args.prompt,
-            "direction": str(direction_path),
-            "direction_meta": meta,
-            "season_file": str(args.season_file),
-            "per_probe_shift": dict(zip(prefixes, shifts)),
-            "mean_score": mean_score,
-        },
-        indent=2,
-    )
-)
-print(f"wrote {out_path}")
+# Interactive loop: the model and prefixes stay loaded across iterations, so
+# only the first response (what kind of input) and second response (the
+# input itself) are prompted for each round.
+print("\nready. Enter prompts to score, or swap in a new direction file.")
+while True:
+    kind = input("\n[p]rompt / [d]irection file / [q]uit? ").strip().lower()
+    if kind in ("q", "quit", "exit"):
+        break
+    elif kind in ("p", "prompt"):
+        prompt = input("prompt: ").strip()
+        if not prompt:
+            print("[error] empty prompt, skipping")
+            continue
+        score_prompt(prompt)
+    elif kind in ("d", "direction"):
+        path_str = input("direction file path: ").strip()
+        if not path_str:
+            print("[error] empty path, skipping")
+            continue
+        load_new_direction(path_str)
+    else:
+        print(f"[error] unrecognized choice {kind!r}, enter p/d/q")
