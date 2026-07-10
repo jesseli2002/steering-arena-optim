@@ -111,7 +111,9 @@ def shift_and_specificity(
     for unit d.
     """
     d64 = np.asarray(d, dtype=np.float64)
-    d64 = d64 / np.linalg.norm(d64)  # cosine() normalizes d too -- keep exact parity for any d
+    d64 = d64 / np.linalg.norm(
+        d64
+    )  # cosine() normalizes d too -- keep exact parity for any d
     mat = unit_rows(batch_resid_fn([compose(seq, p) for p in probes]))
     delta = mat - np.asarray(base_units, dtype=np.float64)  # (P, H)
     # inputs are finite; some BLAS builds emit spurious overflow warnings on @
@@ -161,7 +163,9 @@ if meta.get("placeholder"):
 # device_map=...)). Weights dispatch lazily on the first trace below.
 has_cuda = torch.cuda.is_available()
 if not has_cuda:
-    print("\033[93mWarning: CUDA not available, running on CPU. This will be slow.\033[0m")
+    print(
+        "\033[93mWarning: CUDA not available, running on CPU. This will be slow.\033[0m"
+    )
 dtype = torch.bfloat16 if has_cuda else torch.float32
 
 HF_TOKEN = os.getenv("HF_TOKEN")
@@ -173,7 +177,9 @@ model = LanguageModel(MODEL_ID, device_map="auto", dtype=dtype, token=HF_TOKEN)
 H = int(model.config.hidden_size)
 NUM_LAYERS = int(model.config.num_hidden_layers)
 assert H == d.shape[0], f"direction dim {d.shape[0]} != model hidden size {H}"
-assert 0 <= LAYER < NUM_LAYERS, f"layer {LAYER} out of range for {NUM_LAYERS}-layer model"
+assert (
+    0 <= LAYER < NUM_LAYERS
+), f"layer {LAYER} out of range for {NUM_LAYERS}-layer model"
 
 
 def batch_last_resids(texts: list[str]) -> np.ndarray:
