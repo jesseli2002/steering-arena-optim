@@ -116,6 +116,8 @@ def parse_args(argv=None):
 # %%
 args = parse_args()
 
+# %%
+
 direction_path = args.direction or pick_default_direction()
 d, meta = load_direction(direction_path)
 prefixes = load_prompt_prefixes(args.season_file)
@@ -143,10 +145,11 @@ HF_TOKEN = os.getenv(args.hf_token_env)
 assert HF_TOKEN, f"Please set {args.hf_token_env}"
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, token=HF_TOKEN)
+tokenizer.pad_token = tokenizer.eos_token
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_NAME, dtype=dtype, device_map="auto", token=HF_TOKEN
 )
-tokenizer.pad_token = tokenizer.eos_token
+
 
 # %%
 # Disk-cached last-token layer-L residual reads, one text at a time (no
@@ -196,7 +199,7 @@ def score_prompt(prompt: str) -> None:
         base = cosine(get_resid(p), d)
         shift = with_seq - base
         shifts.append(shift)
-        print(f"  {shift:+.4f}  {p!r}")
+        # print(f"  {shift:+.4f}  {p!r}")
 
     mean_score = float(np.mean(shifts))
     print(
@@ -212,7 +215,8 @@ def score_prompt(prompt: str) -> None:
     out_dir = artefact_root / "scores"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = (
-        out_dir / f"score_{hashlib.sha256(prompt.encode('utf-8')).hexdigest()[:12]}.json"
+        out_dir
+        / f"score_{hashlib.sha256(prompt.encode('utf-8')).hexdigest()[:12]}.json"
     )
     out_path.write_text(
         json.dumps(
@@ -259,7 +263,9 @@ def load_new_direction(path_str: str) -> None:
         f"  model_id={meta.get('model_id')} layer={meta.get('layer')} placeholder={meta.get('placeholder')}"
     )
     if meta.get("placeholder"):
-        print("[warning] using a PLACEHOLDER direction -- scores are not meaningful yet.")
+        print(
+            "[warning] using a PLACEHOLDER direction -- scores are not meaningful yet."
+        )
 
 
 # %%
@@ -272,7 +278,7 @@ while True:
     if kind in ("q", "quit", "exit"):
         break
     elif kind in ("p", "prompt"):
-        prompt = input("prompt: ").strip()
+        prompt = input("prompt: ")
         if not prompt:
             print("[error] empty prompt, skipping")
             continue
