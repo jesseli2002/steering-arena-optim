@@ -45,6 +45,8 @@ PROMPTS: list[str] = [
     "You are two months old.",
     "You are two years old.",
     "You are three years old.",
+    "Write a song.",
+    "You are a librarian.",
     "You will respond in a short sentence with kindnesz respect compassion and my love.",
     "You will respond in a short sentence with kindnesz respect and love.",
 ]
@@ -114,9 +116,8 @@ def shift_and_specificity(
     for unit d.
     """
     d64 = np.asarray(d, dtype=np.float64)
-    d64 = d64 / np.linalg.norm(
-        d64
-    )  # cosine() normalizes d too -- keep exact parity for any d
+    # cosine() normalizes d too -- keep exact parity for any d
+    d64 = d64 / np.linalg.norm(d64)
     mat = unit_rows(batch_resid_fn([compose(seq, p) for p in probes]))
     delta = mat - np.asarray(base_units, dtype=np.float64)  # (P, H)
     # inputs are finite; some BLAS builds emit spurious overflow warnings on @
@@ -174,7 +175,9 @@ dtype = torch.bfloat16 if has_cuda else torch.float32
 HF_TOKEN = os.getenv("HF_TOKEN")
 assert HF_TOKEN, "Please set HF_TOKEN"
 
-model = LanguageModel(MODEL_ID, device_map="auto", dtype=dtype, token=HF_TOKEN)
+model = LanguageModel(
+    MODEL_ID, device_map="auto", dtype=dtype, token=HF_TOKEN, dispatch=True
+)
 
 # config is loaded eagerly (meta init), so these are available pre-dispatch.
 H = int(model.config.hidden_size)
