@@ -1,34 +1,30 @@
 # Score a list of steering prompts against the Season 2 OLMo L24 logistic
-# direction, reading activations via nnsight/NDIF from the SAME model the live
-# Steering Arena scorer uses. This is the closest possible reproduction of the
-# website scores: identical model + layer, the same batched left-padded
-# last-token residual read, and the same cosine-steering-shift math.
+# direction, reading activations through nnsight -- the same wrapper the live
+# Steering Arena scorer uses -- but with nnsight's LOCAL backend (remote=False)
+# instead of NDIF.
 #
-# Why not estimate_probe_score.py? That script reads activations from a LOCAL
-# transformers forward, one text at a time (no padding). The live scorer instead
-# runs a single BATCHED (left-padded) forward on NDIF. Either of those (local vs
-# NDIF numerics, unbatched vs batched padding) can shift the score, which is the
-# likeliest reason estimate_probe_score.py doesn't reproduce the leaderboard.
+# The point is minimal divergence from the live scorer: the activation-reading
+# code is the exact same nnsight trace (model.model.layers[L].output[:, -1, :],
+# batched + left-padded) copied verbatim from app/ndif_client.py:batch_last_resids,
+# and the cosine-steering-shift math is copied verbatim from app/scoring.py. The
+# ONLY difference from live is where the forward runs: locally on this box's GPU
+# rather than on NDIF (needed because the NDIF key can't reach this model). Same
+# nnsight, same trace, same HF model underneath -- so this is the closest local
+# reproduction of the leaderboard, and closer than estimate_probe_score.py
+# (which reimplements the read via transformers output_hidden_states, unbatched
+# and unpadded).
 #
-# Scoring math (cosine/compose/unit_rows/baseline_unit_rows/shift_and_specificity)
-# and the residual read (batch_last_resids) are copied verbatim from the
-# read-only steering-arena/app/{scoring,ndif_client}.py -- same convention as
-# recover_direction.py / estimate_probe_score.py. steering-arena/ is reference
-# only: never imported from, never written to (CLAUDE.md).
-#
-# The live wiring being mirrored: app/main.py get_scorer() ->
-#   base_units = baseline_unit_rows(probes, batch_fn)          # one forward, once
-#   shift, z  = shift_and_specificity(seq, probes, batch_fn, base_units, d, eps)
-# with batch_fn(texts) = reader.batch_last_resids(texts, layer). Season 2's
-# ranked score is the raw `shift`; `specificity_z` is reported alongside (as the
-# site does) but is not the leaderboard value.
+# steering-arena/ is reference only: never imported from, never written to
+# (CLAUDE.md) -- hence the verbatim copies below.
 import json
 import os
-import time
 from pathlib import Path
 
 import numpy as np
+import torch
 from dotenv import load_dotenv
+
+from nnsight import LanguageModel
 
 load_dotenv()
 
@@ -64,12 +60,10 @@ SEASON_FILE = ARENA_ROOT / "data" / "probes" / "season2.json"
 # specificity denominator floor -- frozen per season in app/config.py.
 SPECIFICITY_EPS = 1e-4
 
-# nnsight remote call retry policy (small on purpose: fail fast for now).
-MAX_RETRIES = 4  # total attempts per remote forward (keep in 3..5)
-BACKOFF_INITIAL_S = 2.0  # first backoff sleep
-BACKOFF_FACTOR = 2.0  # each retry multiplies the sleep by this
-
-REMOTE = True  # read from NDIF (the live path). Set False only for local debug.
+# Run the nnsight forward locally on this box. NDIF (remote=True) is unavailable
+# for this model, which is the whole reason this script exists; flipping this to
+# True would additionally need an NDIF key with access to the model.
+REMOTE = False
 
 
 # %%
@@ -151,69 +145,7 @@ def load_probes(path) -> list[str]:
 
 
 # %%
-# ---- NDIF residual read, mirroring app/ndif_client.py:batch_last_resids ------
-def build_model(model_id: str):
-    """nnsight LanguageModel wired to NDIF, same as ResidualReader.build('ndif')."""
-    import nnsight
-    from nnsight import LanguageModel
-
-    ndif_key = os.getenv("NDIF_API_KEY", "")
-    if ndif_key:
-        # In-memory only (set_default_api_key would write the key to disk).
-        nnsight.CONFIG.API.APIKEY = ndif_key
-    elif REMOTE:
-        print(
-            "[warning] NDIF_API_KEY not set -- relying on nnsight's on-disk config. "
-            "Set NDIF_API_KEY (see steering-arena/.env.example) if remote calls 401."
-        )
-    return LanguageModel(model_id)
-
-
-def _batch_last_resids_once(model, texts: list[str], layer: int) -> np.ndarray:
-    """One batched forward -> (len(texts), hidden) last-token layer-`layer` residuals.
-
-    Left-pads so the last real token sits at index -1 for every row -- the exact
-    read the live scorer performs (app/ndif_client.py:batch_last_resids)."""
-    import torch
-
-    tok = model.tokenizer
-    if tok.pad_token is None:
-        tok.pad_token = tok.eos_token
-    tok.padding_side = "left"
-    with model.trace(list(texts), remote=REMOTE):
-        saved = model.model.layers[layer].output[:, -1, :].save()  # (n, hidden)
-    v = saved.value if hasattr(saved, "value") else saved
-    return np.asarray(v.detach().to(torch.float32).cpu().numpy(), dtype=np.float32)
-
-
-def batch_last_resids(model, texts: list[str], layer: int) -> np.ndarray:
-    """`_batch_last_resids_once` with exponential backoff on the remote call.
-
-    Retries transient NDIF failures a small number of times, then re-raises so a
-    persistent problem surfaces immediately rather than silently looping."""
-    last_err: Exception | None = None
-    for attempt in range(MAX_RETRIES):
-        try:
-            return _batch_last_resids_once(model, texts, layer)
-        except (
-            Exception
-        ) as err:  # noqa: BLE001 -- retry any NDIF/transport error for now
-            last_err = err
-            if attempt == MAX_RETRIES - 1:
-                break
-            sleep_s = BACKOFF_INITIAL_S * (BACKOFF_FACTOR**attempt)
-            print(
-                f"[retry] remote forward failed (attempt {attempt + 1}/{MAX_RETRIES}): "
-                f"{type(err).__name__}: {err}\n        backing off {sleep_s:.1f}s"
-            )
-            time.sleep(sleep_s)
-    raise RuntimeError(
-        f"remote forward failed after {MAX_RETRIES} attempts"
-    ) from last_err
-
-
-# %%
-# ---- Load direction + probes, build model -----------------------------------
+# ---- Load direction + probes ------------------------------------------------
 d, meta = load_direction(DIRECTION_PATH)
 probes = load_probes(SEASON_FILE)
 
@@ -226,11 +158,49 @@ print(f"probes: {len(probes)} from {SEASON_FILE}")
 if meta.get("placeholder"):
     print("[warning] using a PLACEHOLDER direction -- scores are not meaningful.")
 
-model = build_model(MODEL_ID)
+
+# %%
+# ---- Local nnsight model ----------------------------------------------------
+# device_map/dtype/token flow through nnsight into AutoModelForCausalLM.from_pretrained
+# (the same route the arena's local dev path uses via LanguageModel(model_id,
+# device_map=...)). Weights dispatch lazily on the first trace below.
+has_cuda = torch.cuda.is_available()
+if not has_cuda:
+    print(
+        "\033[93mWarning: CUDA not available, running on CPU. This will be slow.\033[0m"
+    )
+dtype = torch.bfloat16 if has_cuda else torch.float32
+
+HF_TOKEN = os.getenv("HF_TOKEN")
+assert HF_TOKEN, "Please set HF_TOKEN"
+
+model = LanguageModel(MODEL_ID, device_map="auto", dtype=dtype, token=HF_TOKEN)
+
+# config is loaded eagerly (meta init), so these are available pre-dispatch.
+H = int(model.config.hidden_size)
+NUM_LAYERS = int(model.config.num_hidden_layers)
+assert H == d.shape[0], f"direction dim {d.shape[0]} != model hidden size {H}"
+assert (
+    0 <= LAYER < NUM_LAYERS
+), f"layer {LAYER} out of range for {NUM_LAYERS}-layer model"
 
 
-def batch_fn(texts: list[str]) -> np.ndarray:
-    return batch_last_resids(model, texts, LAYER)
+def batch_last_resids(texts: list[str]) -> np.ndarray:
+    """Last-token layer-`LAYER` residual for a BATCH of texts in ONE forward pass
+    -> (n, H). Copied verbatim from app/ndif_client.py:batch_last_resids (layer
+    pinned to LAYER, remote=REMOTE).
+
+    Left-pads so the last real token sits at index -1 for every row (HF derives
+    position_ids/attention from the mask, so this matches the unbatched value).
+    One `.save()` of the batched layer output."""
+    tok = model.tokenizer
+    if tok.pad_token is None:
+        tok.pad_token = tok.eos_token
+    tok.padding_side = "left"
+    with model.trace(list(texts), remote=REMOTE):
+        saved = model.model.layers[LAYER].output[:, -1, :].save()  # (n, H)
+    v = saved.value if hasattr(saved, "value") else saved
+    return np.asarray(v.detach().to(torch.float32).cpu().numpy(), dtype=np.float32)
 
 
 # %%
@@ -244,13 +214,13 @@ if not PROMPTS:
     )
 
 print("\ncomputing probe baselines (one batched forward)...")
-base_units = baseline_unit_rows(probes, batch_fn)
+base_units = baseline_unit_rows(probes, batch_last_resids)
 
 results = []
 for i, prompt in enumerate(PROMPTS):
     print(f"\n[{i + 1}/{len(PROMPTS)}] scoring: {prompt!r}")
     shift, z = shift_and_specificity(
-        prompt, probes, batch_fn, base_units, d, eps=SPECIFICITY_EPS
+        prompt, probes, batch_last_resids, base_units, d, eps=SPECIFICITY_EPS
     )
     print(f"  probe score (cosine_steering_shift) = {shift:+.6f}")
     print(f"  specificity_z                       = {z:+.2f}")
@@ -264,7 +234,7 @@ for r in sorted(results, key=lambda r: r["shift"], reverse=True):
 
 out_dir = REPO_ROOT / "data" / "scores"
 out_dir.mkdir(parents=True, exist_ok=True)
-out_path = out_dir / "ndif_prompt_scores.json"
+out_path = out_dir / "local_prompt_scores.json"
 out_path.write_text(
     json.dumps(
         {
@@ -273,7 +243,7 @@ out_path.write_text(
             "season_file": str(SEASON_FILE),
             "model_id": MODEL_ID,
             "layer": LAYER,
-            "backend": "ndif" if REMOTE else "local",
+            "backend": "nnsight_local",
             "results": results,
         },
         indent=2,
