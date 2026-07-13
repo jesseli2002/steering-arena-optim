@@ -13,6 +13,10 @@ Do not search for API keys/tokens oustide of this directory.
 - Avoid unnecessary use of non-ASCII characters in comments
 - Format Python code with Black
 
+
+## vast_setup
+`vast_setup/` is a separate nested git repo. To modify its files, `/cd` into it first — editing it from an outer-rooted session hits worktree-isolation friction. If asked to change vast_setup while rooted at the outer repo, remind the user to `/cd vast_setup` before starting.
+
 ## Background processes
 Each Bash call runs in its own PID namespace, so a sandboxed `ps` sees only its own invocation, and plain `&`/`nohup`/`setsid` processes are killed when the invocation ends.
 - Never use `ps` to check whether a process you launched is still alive; empty output means "not visible from here," not "dead."

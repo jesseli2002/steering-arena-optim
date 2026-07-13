@@ -137,6 +137,7 @@ else:
 
 # Some algorithm hyperparameters
 N_CONTROLLED_TOKENS = 64
+# TODO: these are actually set in the optimization loop
 N_TOPK_REPL = 256  # K in Top-K promising token substitutions
 BATCH_SIZE_OPTIM = 512  # Batch size in optimization
 
@@ -150,6 +151,7 @@ if SMOKE:  # for debugging
 
 # Checkpointing / experiment tracking
 RESUME_FROM = None  # None = fresh run; else path to an existing run dir to continue
+# RESUME_FROM =   # None = fresh run; else path to an existing run dir to continue
 USE_WANDB = True  # attempts wandb; degrades to a no-op if import/init/log fails
 
 # %%
