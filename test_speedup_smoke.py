@@ -93,6 +93,7 @@ def test_truncation_preserves_hidden_state(model, suffixes):
     assert t.allclose(h_full, h_trunc, atol=1e-5)
 
 
+# chunk=4 does not divide M=11 evenly, exercising the ragged final chunk.
 @pytest.mark.parametrize("chunk", [1, 4, 11, None])
 def test_batched_scores_match_reference(model, suffixes, probe_dir, chunk):
     """Chunked batched scoring matches a per-candidate reference for any chunk."""
