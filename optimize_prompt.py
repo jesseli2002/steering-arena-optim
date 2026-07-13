@@ -60,7 +60,7 @@ assert HF_TOKEN, f"Please set HF_TOKEN in .env"
 
 device = t.device("cuda" if t.cuda.is_available() else "cpu")
 # device = t.device("cpu")  # temporary override
-dtype = t.float32  # for training
+dtype = t.bfloat16  # for training
 if device.type != "cuda":
     print("\033[93mWarning: CUDA not available, using CPU. This will be slow.\033[0m")
 
@@ -97,11 +97,16 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, token=HF_TOKEN)
 tokenizer.pad_token = tokenizer.eos_token
 tokenizer.padding_side = "right"
+
+# device_map = "auto"
+max_memory = {i: "10GiB" for i in range(8)}
+print(f"{max_memory=}")
+
 model = AutoModelForCausalLM.from_pretrained(
-    MODEL_NAME, dtype=dtype, device_map="auto", token=HF_TOKEN
+    MODEL_NAME, dtype=dtype, device_map="auto", max_memory=max_memory, token=HF_TOKEN
 )
-if model.device != device:  # in debugging, might use CPU
-    model = model.to(device)
+# if model.device != device:  # in debugging, might use CPU
+#     model = model.to(device)
 
 model.requires_grad_(False)
 
@@ -351,6 +356,5 @@ while True:
     ctrl_token_ids = best_candidate
     iter_idx += 1
 
-
-gc.collect()
-t.cuda.empty_cache()
+    gc.collect()
+    t.cuda.empty_cache()
