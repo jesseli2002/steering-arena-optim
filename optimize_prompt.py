@@ -61,8 +61,9 @@ def parse_args(argv=None):
     return ap.parse_args(argv)
 
 
-# args = parse_args()
-SMOKE = True  # args.smoke
+args = parse_args()
+# SMOKE = True
+SMOKE = args.smoke
 
 # Load probe direction & season prompt suffix
 SEASON_FILE = ARENA_ROOT / "data" / "probes" / "season2.json"
@@ -201,7 +202,7 @@ def decode_prompt(ids):
     return tokenizer.decode(ids.tolist(), skip_special_tokens=True)
 
 
-def save_json_atomic(path, obj):
+def save_json_atomic(path: Path, obj):
     """Write JSON to `path` atomically via a temp file + replace."""
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(obj, indent=2))
@@ -340,6 +341,7 @@ while True:
             "score": score_curr,
             "best_score": best_score,
             "iter_time_s": iter_time,
+            "prompt": prompt_str,
         }
     )
 

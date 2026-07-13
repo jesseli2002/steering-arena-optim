@@ -6,6 +6,8 @@ steering-arena
 
 __pycache__
 
+wandb
+
 # Artefacts on big model
 data
 # Artefacts for smoke-test model (only locally listed)
