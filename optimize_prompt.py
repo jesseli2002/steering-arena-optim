@@ -4,6 +4,24 @@ Optimize the prompt using "Greedy Coordinate Gradients
 """
 
 import argparse
+
+
+def parse_args(argv=None):
+    ap = argparse.ArgumentParser(
+        description="Interactively estimate the mean Season 2 probe score for "
+        "steering prompts, loading the model once and looping over stdin."
+    )
+    ap.add_argument(
+        "--smoke",
+        action="store_true",
+        help="Smoke test on smaller model (GPT-2), run locally to test pipeline",
+    )
+    return ap.parse_args(argv)
+
+
+args = parse_args()
+
+# %%
 import hashlib
 import json
 import os
@@ -48,21 +66,6 @@ if device.type != "cuda":
 
 
 # %%
-def parse_args(argv=None):
-    ap = argparse.ArgumentParser(
-        description="Interactively estimate the mean Season 2 probe score for "
-        "steering prompts, loading the model once and looping over stdin."
-    )
-    ap.add_argument(
-        "--smoke",
-        action="store_true",
-        help="Smoke test on smaller model (GPT-2), run locally to test pipeline",
-    )
-    return ap.parse_args(argv)
-
-
-args = parse_args()
-# SMOKE = True
 SMOKE = args.smoke
 
 # Load probe direction & season prompt suffix
