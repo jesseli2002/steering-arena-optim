@@ -105,8 +105,8 @@ def compute_scores_batch(
     seq = ctrl_seq + sfx_seq
 
     # Right padding => last real token sits at ctrl_seq + n_sfx - 1.
-    gather_pos = (n_sfx_tokens + ctrl_seq - 1).to(device)  # (n_sfx,)
-    ctrl_mask = t.ones(n_sfx, ctrl_seq, device=device, dtype=sfx_mask.dtype)
+    gather_pos = n_sfx_tokens + ctrl_seq - 1  # (n_sfx,)
+    ctrl_mask = t.ones(n_sfx, ctrl_seq, dtype=sfx_mask.dtype)
 
     scores = t.empty(n_cand, device=device, dtype=t.float32)
     chunk = n_cand if chunk is None else chunk
@@ -128,8 +128,8 @@ def compute_scores_batch(
         h = out.hidden_states[layer + 1]  # (c*n_sfx, seq, d_model)
 
         pos = gather_pos[None].expand(c, n_sfx).reshape(c * n_sfx)
-        acts = h[t.arange(c * n_sfx, device=device), pos]  # (c*n_sfx, d_model)
+        acts = h[t.arange(c * n_sfx), pos].cpu().float()  # (c*n_sfx, d_model)
         norm = t.linalg.norm(acts, dim=-1)
-        sc = (acts.float() @ probe_dir.float()) / norm.float()  # (c*n_sfx,)
+        sc = (acts @ probe_dir) / norm  # (c*n_sfx,)
         scores_batch[:] = sc.reshape(c, n_sfx).mean(dim=1)
     return scores

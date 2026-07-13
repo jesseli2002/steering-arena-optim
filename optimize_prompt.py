@@ -82,8 +82,9 @@ else:
     DIRECTION_FILE = ARENA_ROOT / "data/directions/d_olmo3_L24_logistic.npz"
 
 # %%
+# Device convention: Probe scoring is computed on CPU with float32.
 probe_dir, meta = load_direction(DIRECTION_FILE)
-probe_dir = t.tensor(probe_dir / np.linalg.norm(probe_dir), device=device, dtype=dtype)
+probe_dir = t.tensor(probe_dir / np.linalg.norm(probe_dir), device="cpu", dtype=float)
 suffixes = load_prompt_suffixes(SEASON_FILE)
 
 print(f"direction: {DIRECTION_FILE}")
@@ -105,7 +106,8 @@ tokenizer.pad_token = tokenizer.eos_token
 tokenizer.padding_side = "right"
 
 max_memory = None
-# max_memory = {i: "10GiB" for i in range(8)}
+# max_memory = {i: "20GiB" for i in range(4)}
+max_memory = {0: "15GiB", 1: "17GiB", 2: "20GiB", 3: "20GiB"}
 print(f"{max_memory=}")
 
 model = AutoModelForCausalLM.from_pretrained(
@@ -144,22 +146,20 @@ BATCH_SIZE_OPTIM = 512  # Batch size in optimization
 # Candidates scored per forward pass. Main memory/speed knob: higher packs more
 # candidates into a single batched forward (faster) but uses more activation
 # memory. Each unit of chunk costs one current-prefix-sized forward.
-CAND_CHUNK = 8
+CAND_CHUNK = 3
 
 if SMOKE:  # for debugging
     BATCH_SIZE_OPTIM = 32
 
 # Checkpointing / experiment tracking
 RESUME_FROM = None  # None = fresh run; else path to an existing run dir to continue
-# RESUME_FROM =   # None = fresh run; else path to an existing run dir to continue
+RESUME_FROM = "data/optimization/2026-07-13T14-11-04Z"  # None = fresh run; else path to an existing run dir to continue
 USE_WANDB = True  # attempts wandb; degrades to a no-op if import/init/log fails
 
 # %%
 # sfx -> suffix tokens
 sfx_enc = tokenizer([" " + suffix for suffix in suffixes], padding=True)
-n_sfx_tokens = t.tensor(sfx_enc["attention_mask"], device=device).sum(
-    axis=1  # (batch, )
-)
+n_sfx_tokens = t.tensor(sfx_enc["attention_mask"]).sum(axis=1)  # (batch, )
 sfx_tokens = t.tensor(sfx_enc["input_ids"])  # (batch, seq)
 BATCH_SIZE = len(n_sfx_tokens)
 
@@ -211,6 +211,7 @@ def compute_score(ctrl_token_ids, req_grad: bool):
     probed_layer = result.hidden_states[LAYER + 1]  # (batch, seq, d_model)
     probed_acts = probed_layer[t.arange(BATCH_SIZE), n_tokens - 1]  # (batch, d_model)
     # TODO: Check with steering-arena author their layer numbering convention for probe.
+    probed_acts = probed_acts.cpu().float()  # probe_dir also on CPU
 
     norm = t.linalg.norm(probed_acts, axis=-1)  # (batch,)
     scores = (
@@ -308,9 +309,12 @@ while True:
     elif iter_idx < N_CONTROLLED_TOKENS * 8:
         N_TOPK_REPL = 16  # K in Top-K promising token substitutions
         BATCH_SIZE_OPTIM = 32  # Batch size in optimization
-    elif iter_idx < N_CONTROLLED_TOKENS * 32:
-        N_TOPK_REPL = 16  # K in Top-K promising token substitutions
-        BATCH_SIZE_OPTIM = 32  # Batch size in optimization
+    elif iter_idx < N_CONTROLLED_TOKENS * 16:
+        N_TOPK_REPL = 32  # K in Top-K promising token substitutions
+        BATCH_SIZE_OPTIM = 64  # Batch size in optimization
+    else:
+        N_TOPK_REPL = 64  # K in Top-K promising token substitutions
+        BATCH_SIZE_OPTIM = 128  # Batch size in optimization
 
     # redundant since model parameters are frozen, but left in as good practice
     model.zero_grad(set_to_none=True)
@@ -341,7 +345,7 @@ while True:
         # (BATCH_SIZE_OPTIM, N_CONTROLLED_TOKENS): each candidate differs from the
         # current prefix in exactly one position.
         candidates = ctrl_token_ids[None].repeat(BATCH_SIZE_OPTIM, 1)
-        candidates[t.arange(BATCH_SIZE_OPTIM, device=device), repl_seq_idx] = topk_idxs[
+        candidates[t.arange(BATCH_SIZE_OPTIM), repl_seq_idx] = topk_idxs[
             repl_seq_idx, repl_topk_idxidx
         ]
 
@@ -351,7 +355,7 @@ while True:
             model.get_input_embeddings(),
             candidates,
             sfx_embed,
-            t.tensor(sfx_enc["attention_mask"], device=device),
+            t.tensor(sfx_enc["attention_mask"]),
             n_sfx_tokens,
             probe_dir,
             LAYER,
