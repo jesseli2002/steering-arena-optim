@@ -1,7 +1,6 @@
-import hashlib
 import json
-import os
 from pathlib import Path
+from itertools import batched
 
 import numpy as np
 import torch as t
@@ -40,7 +39,8 @@ def load_prompt_suffixes(path) -> list[str]:
 
 
 def truncate_to_layer(model, layer: int):
-    """Drop transformer blocks above `layer` so the forward stops right after
+    """
+    Monkey-patches model in-place, dropping transformer blocks above `layer` so the forward stops right after
     producing hidden_states[layer + 1].
 
     The probe only reads one layer's residual stream, so running the remaining
@@ -89,47 +89,48 @@ def compute_scores_batch(
 
     :param trunk: model.base_model (returns hidden_states, no lm_head)
     :param embed: input embedding layer, for looking up control-token embeddings
-    :param ctrl_ids: (M, n_ctrl) candidate control token ids
-    :param sfx_embed: (S, sfx_seq, d_model) precomputed suffix embeddings
-    :param sfx_mask: (S, sfx_seq) suffix attention mask
-    :param n_sfx_tokens: (S,) real (unpadded) suffix token counts
+    :param ctrl_ids: (n_cand, ctrl_seq) candidate control token ids
+    :param sfx_embed: (n_sfx, sfx_seq, d_model) precomputed suffix embeddings
+    :param sfx_mask: (n_sfx, sfx_seq) suffix attention mask
+    :param n_sfx_tokens: (n_sfx,) real (unpadded) suffix token counts
     :param probe_dir: (d_model,) unit probe direction
     :param layer: probe layer index (reads hidden_states[layer + 1])
     :param chunk: candidates per forward pass (memory knob); None = all at once
-    :returns: (M,) float32 mean score per candidate
+    :returns: (n_cand,) float32 mean score per candidate
     """
-    import torch as t
-
     device = sfx_embed.device
-    M, n_ctrl = ctrl_ids.shape
-    S, sfx_seq, d_model = sfx_embed.shape
-    seq = n_ctrl + sfx_seq
+    # n_cand -> # of candidates; ctrl_seq -> # of controlled tokens
+    # n_sfx -> # of suffixs to test; sfx_seq -> sequence index in suffix
+    n_cand, ctrl_seq = ctrl_ids.shape
+    n_sfx, sfx_seq, d_model = sfx_embed.shape
+    seq = ctrl_seq + sfx_seq
 
-    # Right padding => last real token sits at n_ctrl + n_sfx - 1.
-    gather_pos = (n_sfx_tokens + n_ctrl - 1).to(device)  # (S,)
-    ctrl_mask = t.ones(S, n_ctrl, device=device, dtype=sfx_mask.dtype)
+    # Right padding => last real token sits at ctrl_seq + n_sfx - 1.
+    gather_pos = (n_sfx_tokens + ctrl_seq - 1).to(device)  # (n_sfx,)
+    ctrl_mask = t.ones(n_sfx, ctrl_seq, device=device, dtype=sfx_mask.dtype)
 
-    scores = t.empty(M, device=device, dtype=t.float32)
-    chunk = M if chunk is None else chunk
-    for start in range(0, M, chunk):
-        cids = ctrl_ids[start : start + chunk]  # (c, n_ctrl)
-        c = cids.shape[0]
+    scores = t.empty(n_cand, device=device, dtype=t.float32)
+    chunk = n_cand if chunk is None else chunk
+    for cids, scores_batch in batched(zip(ctrl_ids, scores), chunk):
+        # cids = ctrl_ids[start : start + chunk]  # (c, ctrl_seq)
+        c = cids.shape[0]  # chunk size; may be smaller than `chunk` for last iter
 
-        ctrl_embed = embed(cids)  # (c, n_ctrl, d_model)
-        ctrl_e = ctrl_embed[:, None].expand(c, S, n_ctrl, d_model)
-        sfx_e = sfx_embed[None].expand(c, S, sfx_seq, d_model)
-        inp = t.cat([ctrl_e, sfx_e], dim=2).reshape(c * S, seq, d_model)
+        ctrl_embed = embed(cids)  # (c, ctrl_seq, d_model)
+        ctrl_e = ctrl_embed[:, None].expand(c, n_sfx, ctrl_seq, d_model)
+        sfx_e = sfx_embed[None].expand(c, n_sfx, sfx_seq, d_model)
+        inp = t.cat([ctrl_e, sfx_e], dim=2).reshape(c * n_sfx, seq, d_model)
 
-        cm = ctrl_mask[None].expand(c, S, n_ctrl)
-        sm = sfx_mask[None].expand(c, S, sfx_seq)
-        attn = t.cat([cm, sm], dim=2).reshape(c * S, seq)
+        # Build attention mask
+        cm = ctrl_mask[None].expand(c, n_sfx, ctrl_seq)
+        sm = sfx_mask[None].expand(c, n_sfx, sfx_seq)
+        attn = t.cat([cm, sm], dim=2).reshape(c * n_sfx, seq)
 
         out = trunk(inputs_embeds=inp, attention_mask=attn, output_hidden_states=True)
-        h = out.hidden_states[layer + 1]  # (c*S, seq, d_model)
+        h = out.hidden_states[layer + 1]  # (c*n_sfx, seq, d_model)
 
-        pos = gather_pos[None].expand(c, S).reshape(c * S)
-        acts = h[t.arange(c * S, device=device), pos]  # (c*S, d_model)
+        pos = gather_pos[None].expand(c, n_sfx).reshape(c * n_sfx)
+        acts = h[t.arange(c * n_sfx, device=device), pos]  # (c*n_sfx, d_model)
         norm = t.linalg.norm(acts, dim=-1)
-        sc = (acts.float() @ probe_dir.float()) / norm.float()  # (c*S,)
-        scores[start : start + chunk] = sc.reshape(c, S).mean(dim=1)
+        sc = (acts.float() @ probe_dir.float()) / norm.float()  # (c*n_sfx,)
+        scores_batch[:] = sc.reshape(c, n_sfx).mean(dim=1)
     return scores

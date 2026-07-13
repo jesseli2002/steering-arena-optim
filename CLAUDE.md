@@ -2,6 +2,7 @@ This project is to try to optimize performance on Steering Arena, a public compe
 - There's a publically known set of prompts and a probe direction d
 - The goal is to find the prompt prefix that maximizes score along the probe direction, by cosine similarity
 - Refer to https://sohampadianeu-steering-arena.hf.space/reproducibility.html for details.
+- The git remote is GitLab, not GitHub.
 
 `steering-arena` is a cloned copy of the source code for Steering Arena. It's kept for reference but should not be modified or imported from.
 

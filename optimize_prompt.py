@@ -338,7 +338,7 @@ while True:
 
         # (BATCH_SIZE_OPTIM, N_CONTROLLED_TOKENS): each candidate differs from the
         # current prefix in exactly one position.
-        candidates = ctrl_token_ids.unsqueeze(0).repeat(BATCH_SIZE_OPTIM, 1)
+        candidates = ctrl_token_ids[None].repeat(BATCH_SIZE_OPTIM, 1)
         candidates[t.arange(BATCH_SIZE_OPTIM, device=device), repl_seq_idx] = topk_idxs[
             repl_seq_idx, repl_topk_idxidx
         ]
