@@ -1,6 +1,5 @@
 import json
 from pathlib import Path
-from itertools import batched
 
 import numpy as np
 import torch as t
@@ -111,8 +110,8 @@ def compute_scores_batch(
 
     scores = t.empty(n_cand, device=device, dtype=t.float32)
     chunk = n_cand if chunk is None else chunk
-    for cids, scores_batch in batched(zip(ctrl_ids, scores), chunk):
-        # cids = ctrl_ids[start : start + chunk]  # (c, ctrl_seq)
+    # t.split returns views sharing storage, so scores_batch[:] writes into scores.
+    for cids, scores_batch in zip(t.split(ctrl_ids, chunk), t.split(scores, chunk)):
         c = cids.shape[0]  # chunk size; may be smaller than `chunk` for last iter
 
         ctrl_embed = embed(cids)  # (c, ctrl_seq, d_model)
