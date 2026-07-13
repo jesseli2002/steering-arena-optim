@@ -16,6 +16,20 @@ def parse_args(argv=None):
         action="store_true",
         help="Smoke test on smaller model (GPT-2), run locally to test pipeline",
     )
+    ap.add_argument(
+        "--replicas",
+        type=int,
+        default=None,
+        help="Force number of data-parallel model replicas "
+        "(default: auto from GPU count/capacity)",
+    )
+    ap.add_argument(
+        "--gpus-per-replica",
+        type=int,
+        default=None,
+        help="Force GPUs per replica "
+        "(default: auto from model size vs card capacity)",
+    )
     return ap.parse_args(argv)
 
 
@@ -30,6 +44,8 @@ import gc
 import time
 import datetime as dt
 
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
 import torch as t
 from dotenv import load_dotenv
@@ -43,6 +59,8 @@ from utils import (
     load_prompt_suffixes,
     truncate_to_layer,
     compute_scores_batch,
+    plan_replica_placement,
+    build_replicas,
 )
 
 # %%
@@ -154,6 +172,30 @@ RESUME_FROM = None  # None = fresh run; else path to an existing run dir to cont
 # RESUME_FROM = "data/optimization/2026-07-13T14-11-04Z"  # None = fresh run; else path to an existing run dir to continue
 USE_WANDB = True  # attempts wandb; degrades to a no-op if import/init/log fails
 
+# Data-parallel replicas: each optimization step's candidate batch is sharded
+# across replicas. Defaults auto-detect from GPU count/capacity; override via
+# CLI (--replicas / --gpus-per-replica) or here.
+N_REPLICAS = args.replicas  # None => auto (n_gpus // gpus_per_replica)
+GPUS_PER_REPLICA = args.gpus_per_replica  # None => auto from model size vs card
+GPU_MEM_FRACTION = 0.9  # usable fraction of each card (headroom for activations)
+
+replica_groups = plan_replica_placement(
+    model,
+    n_replicas=N_REPLICAS,
+    gpus_per_replica=GPUS_PER_REPLICA,
+    mem_fraction=GPU_MEM_FRACTION,
+)
+if len(replica_groups) > 1:
+    print(f"Building {len(replica_groups)} replicas on GPU groups {replica_groups}")
+    replicas = build_replicas(model, replica_groups, mem_fraction=GPU_MEM_FRACTION)
+    model = replicas[0]  # replica 0 also serves the gradient/top-k step
+    trunk = model.base_model
+    gc.collect()
+    t.cuda.empty_cache()
+else:
+    # No CUDA, or a single group: keep today's single-model path unchanged.
+    replicas = [model]
+
 # %%
 # sfx -> suffix tokens
 sfx_enc = tokenizer(
@@ -167,6 +209,19 @@ sfx_tokens = sfx_enc["input_ids"]  # (batch, seq)
 
 #  constant
 sfx_embed = model.get_input_embeddings()(sfx_tokens.to(device))
+
+# Per-replica copies of the scoring constants that must live on the replica's
+# own input device. sfx_mask/n_sfx_tokens/probe_dir are CPU-resident by
+# convention (see compute_scores_batch) and shared across replicas as-is.
+replica_consts = []
+for rep in replicas:
+    in_dev = rep.get_input_embeddings().weight.device
+    replica_consts.append(
+        {
+            "in_dev": in_dev,
+            "sfx_embed": rep.get_input_embeddings()(sfx_tokens.to(in_dev)),
+        }
+    )
 
 # Initialization of optimized value. Random start/restart might do better, but that's for later.
 ctrl_token_ids = t.full(
@@ -208,6 +263,40 @@ def compute_score_gradient(ctrl_token_ids):
     mean_score = scores[0]
     mean_score.backward()  # Maximize score => pick top k gradients
     return mean_score.item(), ctrl_tokens_onehot.grad
+
+
+def score_candidates(candidates):
+    """Mean probe score per candidate, sharded across replicas and gathered.
+
+    With one replica this is a single compute_scores_batch call. With several,
+    the candidates are tensor_split into contiguous shards scored concurrently
+    on each replica; gathering in order makes the result identical to the
+    single-model run (the later argmax sees the same scores).
+    """
+
+    def score_shard(idx_cids):
+        r, cids = idx_cids
+        rep, c = replicas[r], replica_consts[r]
+        with t.no_grad():
+            ctrl_embed = rep.get_input_embeddings()(cids.to(c["in_dev"]))
+            return compute_scores_batch(
+                rep.base_model,
+                ctrl_embed,
+                c["sfx_embed"],
+                sfx_enc["attention_mask"],
+                n_sfx_tokens,
+                probe_dir,
+                LAYER,
+                chunk=CAND_CHUNK,
+            )
+
+    if len(replicas) == 1:
+        return score_shard((0, candidates))
+
+    shards = t.tensor_split(candidates, len(replicas))  # contiguous, order-preserving
+    with ThreadPoolExecutor(max_workers=len(replicas)) as ex:
+        parts = list(ex.map(score_shard, enumerate(shards)))
+    return t.cat(parts)  # compute_scores_batch returns CPU tensors by convention
 
 
 # %%
@@ -316,7 +405,9 @@ while True:
     # Note: GCG paper https://arxiv.org/abs/2307.15043 formulates the problem as loss minimziation, but we're doing score maximization => no gradient negation
     topk_vals, topk_idxs = score_grad.topk(N_TOPK_REPL, axis=-1)  # (seq, topk)
 
-    with t.inference_mode():
+    # no_grad (not inference_mode) so candidate tensors can cross the replica
+    # scoring threads without tripping inference-tensor restrictions.
+    with t.no_grad():
         # For each optimization slot, uniformly pick a random control position and
         # a random replacement from that position's top-k promising substitutions.
         repl_seq_idx = t.randint(
@@ -332,17 +423,9 @@ while True:
             repl_seq_idx, repl_topk_idxidx
         ]
 
-        # Score all candidates in one (chunked) batched forward instead of looping.
-        cand_scores = compute_scores_batch(
-            trunk,
-            model.get_input_embeddings()(candidates),
-            sfx_embed,
-            sfx_enc["attention_mask"],
-            n_sfx_tokens,
-            probe_dir,
-            LAYER,
-            chunk=CAND_CHUNK,
-        )
+        # Score all candidates in (chunked) batched forwards, sharded across
+        # replicas when there is more than one.
+        cand_scores = score_candidates(candidates)
         assert t.isfinite(cand_scores).all(), "Candidate score is not finite (nan?)"
         best_candidate = candidates[t.argmax(cand_scores)]
 
