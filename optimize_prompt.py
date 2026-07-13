@@ -98,8 +98,8 @@ tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, token=HF_TOKEN)
 tokenizer.pad_token = tokenizer.eos_token
 tokenizer.padding_side = "right"
 
-# device_map = "auto"
-max_memory = {i: "10GiB" for i in range(8)}
+max_memory = None
+# max_memory = {i: "10GiB" for i in range(8)}
 print(f"{max_memory=}")
 
 model = AutoModelForCausalLM.from_pretrained(
@@ -281,6 +281,16 @@ else:
 # Optimization loop
 while True:
     iter_start = time.perf_counter()
+
+    if iter_idx < N_CONTROLLED_TOKENS * 4:
+        N_TOPK_REPL = 8  # K in Top-K promising token substitutions
+        BATCH_SIZE_OPTIM = 16  # Batch size in optimization
+    elif iter_idx < N_CONTROLLED_TOKENS * 8:
+        N_TOPK_REPL = 16  # K in Top-K promising token substitutions
+        BATCH_SIZE_OPTIM = 32  # Batch size in optimization
+    elif iter_idx < N_CONTROLLED_TOKENS * 32:
+        N_TOPK_REPL = 16  # K in Top-K promising token substitutions
+        BATCH_SIZE_OPTIM = 32  # Batch size in optimization
 
     # redundant since model parameters are frozen, but left in as good practice
     model.zero_grad(set_to_none=True)
