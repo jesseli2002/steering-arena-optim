@@ -9,6 +9,8 @@ import json
 import os
 from pathlib import Path
 import gc
+import time
+import datetime as dt
 
 import numpy as np
 import torch as t
@@ -59,8 +61,9 @@ def parse_args(argv=None):
     return ap.parse_args(argv)
 
 
-# args = parse_args()
-SMOKE = True  # args.smoke
+args = parse_args()
+# SMOKE = True
+SMOKE = args.smoke
 
 # Load probe direction & season prompt suffix
 SEASON_FILE = ARENA_ROOT / "data" / "probes" / "season2.json"
@@ -116,6 +119,10 @@ BATCH_SIZE_OPTIM = 512  # Batch size in optimization
 
 if SMOKE:  # for debugging
     BATCH_SIZE_OPTIM = 32
+
+# Checkpointing / experiment tracking
+RESUME_FROM = None  # None = fresh run; else path to an existing run dir to continue
+USE_WANDB = True  # attempts wandb; degrades to a no-op if import/init/log fails
 
 # %%
 # sfx -> suffix tokens
@@ -183,17 +190,99 @@ def compute_score(ctrl_token_ids, req_grad: bool):
 
 
 # TODO: Might be faster to batch over BATCH_SIZE_OPTIM in addition to BATCH_SIZE
-# TODO: Functionality to load from checkpoint
-iter_idx = 0
 
+# %%
+# Checkpointing and experiment tracking setup
+
+ARTEFACT_ROOT = REPO_ROOT / ("data_local" if SMOKE else "data")
+
+
+def decode_prompt(ids):
+    """Decode a 1-D tensor of control token ids to the prompt prefix string."""
+    return tokenizer.decode(ids.tolist(), skip_special_tokens=True)
+
+
+def save_json_atomic(path: Path, obj):
+    """Write JSON to `path` atomically via a temp file + replace."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(obj, indent=2))
+    tmp.replace(path)
+
+
+if RESUME_FROM is not None:
+    run_dir = Path(RESUME_FROM)
+    assert run_dir.is_dir(), f"RESUME_FROM is not a directory: {run_dir}"
+    run_id = run_dir.name
+else:
+    run_id = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
+    run_dir = ARTEFACT_ROOT / "optimization" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+LATEST = run_dir / "latest.json"
+BEST = run_dir / "best.json"
+HISTORY = run_dir / "history.jsonl"
+print(f"run dir: {run_dir}")
+
+# WandB is optional; any failure (missing package, offline) degrades to a no-op.
+wandb_run = None
+if USE_WANDB:
+    try:
+        import wandb
+
+        wandb_run = wandb.init(
+            project="steering-arena-optim",
+            config={
+                "N_CONTROLLED_TOKENS": N_CONTROLLED_TOKENS,
+                "N_TOPK_REPL": N_TOPK_REPL,
+                "BATCH_SIZE_OPTIM": BATCH_SIZE_OPTIM,
+                "model_id": MODEL_NAME,
+                "layer": LAYER,
+                "smoke": SMOKE,
+                "run_id": run_id,
+            },
+        )
+    except Exception as e:
+        print(f"\033[93m[wandb] disabled ({e})\033[0m")
+        wandb_run = None
+
+
+def wandb_log(d):
+    if wandb_run is not None:
+        try:
+            wandb_run.log(d)
+        except Exception:
+            pass
+
+
+# Resume from checkpoint or start fresh
+if RESUME_FROM is not None:
+    state = json.loads(LATEST.read_text())
+    assert (
+        len(state["ctrl_token_ids"]) == N_CONTROLLED_TOKENS
+    ), "checkpoint N_CONTROLLED_TOKENS mismatch"
+    ctrl_token_ids = t.tensor(state["ctrl_token_ids"], device=device)
+    iter_idx = state["iter"] + 1
+    best_score = (
+        json.loads(BEST.read_text())["score"] if BEST.exists() else float("-inf")
+    )
+    print(f"resumed from {LATEST} at iter {iter_idx} (best_score={best_score})")
+else:
+    iter_idx = 0
+    best_score = float("-inf")
+
+# Optimization loop
 while True:
+    iter_start = time.perf_counter()
+
     # redundant since model parameters are frozen, but left in as good practice
     model.zero_grad(set_to_none=True)
 
-    ctrl_tokens_onehot, mean_score_curr = compute_score(ctrl_token_ids, req_grad=True)
+    # Snapshot the state we're about to score (pre-update) for the checkpoint record.
+    ids_scored = ctrl_token_ids
+    prompt_str = decode_prompt(ids_scored)
 
-    print(f"{iter_idx=}, current score {mean_score_curr}")
-    print(f"prompt: ")  # TODO: decode ctrl_token_ids to prompt string
+    ctrl_tokens_onehot, mean_score_curr = compute_score(ctrl_token_ids, req_grad=True)
+    score_curr = mean_score_curr.detach().item()
 
     mean_score_curr.backward()  # Maximize score => pick top k gradients
 
@@ -221,6 +310,39 @@ while True:
 
         cand_scores = t.tensor(cand_scores)
         best_candidate = candidates[t.argmax(cand_scores)]
+
+    iter_time = time.perf_counter() - iter_start
+
+    print(f"{iter_idx=}, current score {score_curr:.4f}, iter_time {iter_time:.2f}s")
+    print(f"prompt: {prompt_str}")
+
+    # Checkpoint the scored state and log metrics.
+    record = {
+        "iter": iter_idx,
+        "score": score_curr,
+        "ctrl_token_ids": ids_scored.tolist(),
+        "prompt": prompt_str,
+        "iter_time_s": iter_time,
+        "model_id": MODEL_NAME,
+        "layer": LAYER,
+        "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+    }
+    save_json_atomic(LATEST, record)
+    with open(HISTORY, "a") as f:
+        f.write(json.dumps(record) + "\n")
+    if score_curr > best_score:
+        best_score = score_curr
+        save_json_atomic(BEST, record)
+
+    wandb_log(
+        {
+            "iter": iter_idx,
+            "score": score_curr,
+            "best_score": best_score,
+            "iter_time_s": iter_time,
+            "prompt": prompt_str,
+        }
+    )
 
     # Update for next loop
     ctrl_token_ids = best_candidate
