@@ -144,7 +144,8 @@ print(
 )
 
 if SMOKE:
-    MODEL_NAME = "openai-community/gpt2-xl"  # 1.5B params, ~6GB
+    # MODEL_NAME = "openai-community/gpt2-xl"  # 1.5B params, ~6GB
+    MODEL_NAME = "openai-community/gpt2"  # gpt2-small
     LAYER = 6  # arbitrary for the smoke test
     max_memory = None
 else:
