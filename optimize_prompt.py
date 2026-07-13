@@ -53,7 +53,7 @@ def parse_args(argv=None):
         description="Interactively estimate the mean Season 2 probe score for "
         "steering prompts, loading the model once and looping over stdin."
     )
-    ap.add_argument_group(
+    ap.add_argument(
         "--smoke",
         action="store_true",
         help="Smoke test on smaller model (GPT-2), run locally to test pipeline",
