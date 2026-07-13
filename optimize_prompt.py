@@ -34,11 +34,17 @@ import numpy as np
 import torch as t
 import einops
 from dotenv import load_dotenv
-from tqdm import tqdm
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from utils import cos_sim, compose, load_direction, load_prompt_suffixes
+from utils import (
+    cos_sim,
+    compose,
+    load_direction,
+    load_prompt_suffixes,
+    truncate_to_layer,
+    compute_scores_batch,
+)
 
 # %%
 t.manual_seed(505080078)
@@ -110,6 +116,15 @@ model = AutoModelForCausalLM.from_pretrained(
 
 model.requires_grad_(False)
 
+# Only layer LAYER's residual stream is read, so drop the blocks above it and
+# run the forward through the trunk (skips the final norm / lm_head). For
+# Olmo-3-32B this keeps 26 of 64 layers (~2.5x faster per forward). The freed
+# blocks are also released from VRAM.
+truncate_to_layer(model, LAYER)
+trunk = model.base_model
+gc.collect()
+t.cuda.empty_cache()
+
 # %%
 if SMOKE:
     NUM_LAYERS = model.config.n_layer
@@ -124,6 +139,11 @@ else:
 N_CONTROLLED_TOKENS = 64
 N_TOPK_REPL = 256  # K in Top-K promising token substitutions
 BATCH_SIZE_OPTIM = 512  # Batch size in optimization
+
+# Candidates scored per forward pass. Main memory/speed knob: higher packs more
+# candidates into a single batched forward (faster) but uses more activation
+# memory. Each unit of chunk costs one current-prefix-sized forward.
+CAND_CHUNK = 8
 
 if SMOKE:  # for debugging
     BATCH_SIZE_OPTIM = 32
@@ -183,7 +203,7 @@ def compute_score(ctrl_token_ids, req_grad: bool):
         BATCH_SIZE, N_CONTROLLED_TOKENS, device=device, dtype=sfx_mask.dtype
     )
     attn_mask = t.cat([ctrl_mask, sfx_mask], axis=1)  # (batch, seq)
-    result = model(
+    result = trunk(
         inputs_embeds=tokens_embed, output_hidden_states=True, attention_mask=attn_mask
     )
     probed_layer = result.hidden_states[LAYER + 1]  # (batch, seq, d_model)
@@ -196,8 +216,6 @@ def compute_score(ctrl_token_ids, req_grad: bool):
     )
     return ctrl_tokens_onehot, scores.mean()
 
-
-# TODO: Might be faster to batch over BATCH_SIZE_OPTIM in addition to BATCH_SIZE
 
 # %%
 # Checkpointing and experiment tracking setup
@@ -310,23 +328,34 @@ while True:
     )
 
     with t.inference_mode():
-        # For each optimization batch, uniformly select a random seq index & random value from topk
-        repl_seq_idx = t.randint(0, topk_idxs.shape[0], (BATCH_SIZE_OPTIM,))
-        repl_topk_idxidx = t.randint(0, topk_idxs.shape[1], (BATCH_SIZE_OPTIM,))
+        # For each optimization slot, uniformly pick a random control position and
+        # a random replacement from that position's top-k promising substitutions.
+        repl_seq_idx = t.randint(
+            0, N_CONTROLLED_TOKENS, (BATCH_SIZE_OPTIM,), device=device
+        )
+        repl_topk_idxidx = t.randint(0, N_TOPK_REPL, (BATCH_SIZE_OPTIM,), device=device)
         # topk_idxidx -> it's an index into topk_idx, so idx-idx
 
-        candidates = []
-        cand_scores = []
-        for seq_idx, topk_idxidx in tqdm(zip(repl_seq_idx, repl_topk_idxidx)):
-            candidate = ctrl_token_ids.clone()  # (seq, )
-            candidate[seq_idx] = topk_idxs[seq_idx, topk_idxidx]
-            _, cand_score = compute_score(candidate, req_grad=False)
+        # (BATCH_SIZE_OPTIM, N_CONTROLLED_TOKENS): each candidate differs from the
+        # current prefix in exactly one position.
+        candidates = ctrl_token_ids.unsqueeze(0).repeat(BATCH_SIZE_OPTIM, 1)
+        candidates[t.arange(BATCH_SIZE_OPTIM, device=device), repl_seq_idx] = topk_idxs[
+            repl_seq_idx, repl_topk_idxidx
+        ]
 
-            assert t.isfinite(cand_score), "Candidate score is not finite (nan?)"
-            candidates.append(candidate)
-            cand_scores.append(cand_score)
-
-        cand_scores = t.tensor(cand_scores)
+        # Score all candidates in one (chunked) batched forward instead of looping.
+        cand_scores = compute_scores_batch(
+            trunk,
+            model.get_input_embeddings(),
+            candidates,
+            sfx_embed,
+            t.tensor(sfx_enc["attention_mask"], device=device),
+            n_sfx_tokens,
+            probe_dir,
+            LAYER,
+            chunk=CAND_CHUNK,
+        )
+        assert t.isfinite(cand_scores).all(), "Candidate score is not finite (nan?)"
         best_candidate = candidates[t.argmax(cand_scores)]
 
     iter_time = time.perf_counter() - iter_start
