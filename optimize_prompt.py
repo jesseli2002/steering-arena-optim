@@ -1,6 +1,6 @@
 # %%
 """
-Optimize the prompt using "Greedy Coordinate Gradients
+Optimize the prompt using "Greedy Coordinate Gradients"
 """
 
 import argparse
