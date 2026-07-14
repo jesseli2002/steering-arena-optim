@@ -1,8 +1,10 @@
 """Equivalence tests for the GCG speedups, on GPT-2 (CPU, offline).
 
-Verifies the two optimizations in utils.py preserve semantics:
+Verifies the utils.py optimizations preserve semantics:
   1. truncate_to_layer leaves hidden_states[LAYER + 1] bit-identical.
   2. compute_scores_batch matches a straightforward per-candidate reference.
+  3. Sharding candidates across replicas matches scoring them all at once.
+  4. plan_replica_placement groups GPUs correctly for various hardware.
 
 Run: pytest test_speedup_smoke.py
 """
@@ -16,7 +18,7 @@ import pytest
 import torch as t
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from utils import truncate_to_layer, compute_scores_batch
+from utils import truncate_to_layer, compute_scores_batch, plan_replica_placement
 
 MODEL_NAME = "openai-community/gpt2"
 LAYER = 6
@@ -148,3 +150,89 @@ def test_gradient_flows_to_onehot(model, suffixes, probe_dir):
     assert grad is not None
     assert t.isfinite(grad).all()
     assert (grad != 0).any()
+
+
+@pytest.mark.parametrize("n_shards", [2, 3, 4])
+def test_sharded_scoring_matches_single(model, suffixes, probe_dir, n_shards):
+    """Splitting candidates across replicas (same model) matches scoring them
+    all at once. Mirrors the multi-GPU fan-out without needing extra GPUs;
+    n_shards=3 does not divide M=11 evenly. Scores agree up to float batching
+    noise, and -- what actually matters -- the argmax winner is unchanged."""
+    truncate_to_layer(model, LAYER)
+    sfx_embed, sfx_mask, n_sfx = suffixes
+    trunk, embed = model.base_model, model.get_input_embeddings()
+
+    M = 11
+    g = t.Generator().manual_seed(3)
+    cands = t.randint(0, model.config.vocab_size, (M, N_CTRL), generator=g)
+
+    def score(c):
+        return compute_scores_batch(
+            trunk, embed(c), sfx_embed, sfx_mask, n_sfx, probe_dir, LAYER, chunk=None
+        )
+
+    full = score(cands)
+    sharded = t.cat([score(s) for s in t.tensor_split(cands, n_shards)])
+    assert t.allclose(sharded, full, atol=1e-5)
+    assert t.argmax(sharded) == t.argmax(full)
+
+
+class _FakeParam:
+    """Reports a byte footprint without allocating it."""
+
+    def __init__(self, numel, esize=2):
+        self._numel, self._esize = numel, esize
+
+    def numel(self):
+        return self._numel
+
+    def element_size(self):
+        return self._esize
+
+
+class _StubModel:
+    def __init__(self, n_bytes, esize=2):
+        self._p = _FakeParam(n_bytes // esize, esize)
+
+    def parameters(self):
+        return [self._p]
+
+
+def _patch_gpus(monkeypatch, count, gib):
+    """Fake `count` CUDA devices each with `gib` GiB of memory."""
+    monkeypatch.setattr(t.cuda, "device_count", lambda: count)
+
+    def props(i):
+        p = type("P", (), {})()
+        p.total_memory = int(gib * 1024**3)
+        return p
+
+    monkeypatch.setattr(t.cuda, "get_device_properties", props)
+
+
+def test_plan_replica_placement_autodetect(monkeypatch):
+    model = _StubModel(26 * 1024**3)  # ~26 GiB model
+
+    _patch_gpus(monkeypatch, count=8, gib=16)  # needs 2 cards/replica -> 4x2
+    assert plan_replica_placement(model) == [[0, 1], [2, 3], [4, 5], [6, 7]]
+
+    _patch_gpus(monkeypatch, count=4, gib=80)  # fits on one big card -> 4x1
+    assert plan_replica_placement(model) == [[0], [1], [2], [3]]
+
+    _patch_gpus(monkeypatch, count=2, gib=16)  # only enough for one replica
+    assert plan_replica_placement(model) == [[0, 1]]
+
+
+def test_plan_replica_placement_overrides(monkeypatch):
+    model = _StubModel(26 * 1024**3)
+    _patch_gpus(monkeypatch, count=8, gib=16)
+
+    # Force fewer replicas than the auto count.
+    assert plan_replica_placement(model, n_replicas=2) == [[0, 1], [2, 3]]
+    # Force one GPU per replica even though the model would not fit.
+    assert plan_replica_placement(model, gpus_per_replica=1) == [[i] for i in range(8)]
+
+
+def test_plan_replica_placement_no_cuda(monkeypatch):
+    monkeypatch.setattr(t.cuda, "device_count", lambda: 0)
+    assert plan_replica_placement(_StubModel(1 << 30)) == []

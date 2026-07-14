@@ -1,4 +1,6 @@
+import copy
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -141,3 +143,73 @@ def compute_scores_batch(
         score_chunks.append(sc.reshape(c, n_sfx).mean(dim=1))
 
     return t.cat(score_chunks)
+
+
+def plan_replica_placement(
+    model, n_replicas=None, gpus_per_replica=None, mem_fraction=0.9
+):
+    """Decide GPU groups for data-parallel replicas from runtime hardware.
+
+    Detects device count and per-card capacity so the same code adapts to
+    2/4/8 GPUs of any size; all knobs are overridable.
+
+    :param model: the (already truncated) model, used to measure its footprint
+    :param n_replicas: force replica count; None => n_gpus // gpus_per_replica
+    :param gpus_per_replica: force GPUs per replica; None => from capacity
+    :param mem_fraction: usable fraction of each card (headroom for activations)
+    :returns: list of GPU-index groups, one per replica, e.g. [[0, 1], [2, 3]].
+        Empty list => no CUDA => caller should use the single-model path.
+    """
+    n_gpus = t.cuda.device_count()
+    if n_gpus == 0:
+        return []
+    model_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
+    # min() is conservative if the cards are heterogeneous.
+    budget = (
+        min(t.cuda.get_device_properties(i).total_memory for i in range(n_gpus))
+        * mem_fraction
+    )
+    if gpus_per_replica is None:
+        gpus_per_replica = max(1, math.ceil(model_bytes / budget))
+    if gpus_per_replica > n_gpus:
+        raise RuntimeError(
+            f"model needs ~{gpus_per_replica} GPUs but only {n_gpus} present"
+        )
+    if n_replicas is None:
+        n_replicas = n_gpus // gpus_per_replica
+    return [
+        list(range(r * gpus_per_replica, (r + 1) * gpus_per_replica))
+        for r in range(n_replicas)
+    ]
+
+
+def build_replicas(model, groups, mem_fraction=0.9):
+    """Clone a (truncated) model onto each GPU group for data parallelism.
+
+    Loads/truncates happen once by the caller; this pays only the clone cost.
+    Each replica is dispatched (pipelined) across the GPUs of its group.
+
+    :param model: the truncated model to clone (moved to CPU as the source)
+    :param groups: GPU-index groups from plan_replica_placement
+    :param mem_fraction: usable fraction of each card for the device map
+    :returns: list of dispatched replica models, one per group
+    """
+    from accelerate import dispatch_model, infer_auto_device_map
+
+    model = model.to("cpu")  # truncated weights now in host RAM
+    t.cuda.empty_cache()
+    replicas = []
+    for grp in groups:
+        rep = copy.deepcopy(model)
+        max_mem = {
+            g: int(t.cuda.get_device_properties(g).total_memory * mem_fraction)
+            for g in grp
+        }
+        dev_map = infer_auto_device_map(
+            rep,
+            max_memory=max_mem,
+            no_split_module_classes=model._no_split_modules,
+        )
+        replicas.append(dispatch_model(rep, device_map=dev_map))
+    del model
+    return replicas
