@@ -163,7 +163,8 @@ N_CONTROLLED_TOKENS = 24
 # Candidates scored per forward pass. Main memory/speed knob: higher packs more
 # candidates into a single batched forward (faster) but uses more activation
 # memory. Each unit of chunk costs one current-prefix-sized forward.
-CAND_CHUNK = 3
+# CAND_CHUNK = 5
+CAND_CHUNK = 8
 
 if SMOKE:  # for debugging
     BATCH_SIZE_OPTIM = 32
