@@ -15,3 +15,6 @@ data_local
 
 # Regenerable caches (activations, etc.) -- machine-local, never committed
 .cache
+
+# Machine-local agent tooling (hardcoded paths, personal tokens) -- never committed
+local_scripts
