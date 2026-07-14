@@ -180,15 +180,10 @@ ctrl_token_ids = t.full(
 def compute_score_gradient(ctrl_token_ids):
     """Current mean probe score and its gradient w.r.t. the control tokens.
 
-    Builds a one-hot encoding of the control prefix, scores it through
-    compute_scores_batch (the n_cand == 1 case), and backprops to get the
-    gradient of the score w.r.t. that one-hot -- the GCG signal for which token
-    substitutions most increase the score.
+    Builds a one-hot encoding of the control prefix, scores it through compute_scores_batch, and backprops to get the gradient of the score w.r.t. that one-hot (the GCG signal).
 
     :param ctrl_token_ids: (N_CONTROLLED_TOKENS,) current prompt-prefix tokens
-    :returns: (score, grad) where score is the float mean probe score and grad
-        is the (N_CONTROLLED_TOKENS, D_VOCAB) gradient of the score w.r.t. the
-        control-token one-hot.
+    :returns: (score, grad) where score is the float mean probe score and grad is the (N_CONTROLLED_TOKENS, D_VOCAB) gradient of the score w.r.t. the control-token one-hot.
     """
     # Define controlled tokens
     ctrl_tokens_onehot = t.zeros(  # (seq, d_vocab)

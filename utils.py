@@ -3,6 +3,7 @@ from pathlib import Path
 
 import numpy as np
 import torch as t
+from jaxtyping import Float
 
 
 # %%
@@ -81,17 +82,10 @@ def compute_scores_batch(
 ):
     """Mean-over-suffix probe score for each of n_cand candidate prefixes.
 
-    Each candidate prefix is scored against all n_sfx suffixes in one (chunked)
-    batched forward -- packing candidates into a single forward instead of
-    looping is where the speedup comes from. All candidates share the same fixed
+    Each candidate prefix is scored against all n_sfx suffixes in one (chunked) batched forward. All candidates share the same fixed
     suffixes; only the control-token prefix varies.
 
-    Takes control embeddings directly (rather than token ids + an embedding
-    layer) so the two callers differ only in how they produce ctrl_embed: the
-    batch candidate scorer feeds an integer embed() lookup, while the
-    single-prefix GCG gradient path (compute_score_gradient) feeds a differentiable
-    one-hot @ embedding-weight product. This function is differentiable w.r.t.
-    ctrl_embed, so gradients flow back through it in that case.
+    This function is differentiable w.r.t. ctrl_embed, so gradients can flow back through it.
 
     :param trunk: model.base_model (returns hidden_states, no lm_head)
     :param ctrl_embed: (n_cand, ctrl_seq, d_model) candidate prefix embeddings
