@@ -32,7 +32,6 @@ import datetime as dt
 
 import numpy as np
 import torch as t
-import einops
 from dotenv import load_dotenv
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -84,7 +83,9 @@ else:
 # %%
 # Device convention: Probe scoring is computed on CPU with float32.
 probe_dir, meta = load_direction(DIRECTION_FILE)
-probe_dir = t.tensor(probe_dir / np.linalg.norm(probe_dir), device="cpu", dtype=float)
+probe_dir = t.tensor(
+    probe_dir / np.linalg.norm(probe_dir), device="cpu", dtype=t.float32
+)
 suffixes = load_prompt_suffixes(SEASON_FILE)
 
 print(f"direction: {DIRECTION_FILE}")
@@ -161,7 +162,6 @@ USE_WANDB = True  # attempts wandb; degrades to a no-op if import/init/log fails
 sfx_enc = tokenizer([" " + suffix for suffix in suffixes], padding=True)
 n_sfx_tokens = t.tensor(sfx_enc["attention_mask"]).sum(axis=1)  # (batch, )
 sfx_tokens = t.tensor(sfx_enc["input_ids"])  # (batch, seq)
-BATCH_SIZE = len(n_sfx_tokens)
 
 #  constant
 sfx_embed = model.get_input_embeddings()(sfx_tokens.to(device))
@@ -178,6 +178,12 @@ ctrl_token_ids = t.full(
 def compute_score(ctrl_token_ids, req_grad: bool):
     """
     Computes mean probe score given tokens in prompt prefix.
+
+    Thin wrapper over compute_scores_batch (the n_cand == 1 case): the only
+    difference from candidate scoring is that the control embeddings come from a
+    differentiable one-hot @ embedding-weight product, so the score is
+    differentiable w.r.t. ctrl_tokens_onehot for the GCG gradient.
+
     :param ctrl_token_ids: Tokens in prompt prefix
     :req_grad: Set to True to enable tracking gradient of ctrl_tokens_onehot
     """
@@ -186,38 +192,22 @@ def compute_score(ctrl_token_ids, req_grad: bool):
         (N_CONTROLLED_TOKENS, D_VOCAB), dtype=dtype, device=device
     )
     ctrl_tokens_onehot[t.arange(N_CONTROLLED_TOKENS), ctrl_token_ids] = 1
-
-    # in message as a whole, (batch, )
-    n_tokens = n_sfx_tokens + N_CONTROLLED_TOKENS
+    ctrl_tokens_onehot.requires_grad = req_grad
 
     embed_weights = model.get_input_embeddings().weight  # (d_vocab, d_model)
+    ctrl_embed = (ctrl_tokens_onehot @ embed_weights)[None]  # (1, seq, d_model)
 
-    ctrl_tokens_onehot.requires_grad = req_grad
-    ctrl_embed = ctrl_tokens_onehot @ embed_weights  # (seq, d_model)
-
-    # (batch, seq, d_vocab)
-    ctrl_embed_expand = ctrl_embed[None].expand(BATCH_SIZE, *ctrl_embed.shape)
-    tokens_embed = t.cat([ctrl_embed_expand, sfx_embed], axis=1)
-
-    # Build attention mask
-    sfx_mask = t.tensor(sfx_enc["attention_mask"], device=device)  # (batch, sfx_seq)
-    ctrl_mask = t.ones(
-        BATCH_SIZE, N_CONTROLLED_TOKENS, device=device, dtype=sfx_mask.dtype
-    )
-    attn_mask = t.cat([ctrl_mask, sfx_mask], axis=1)  # (batch, seq)
-    result = trunk(
-        inputs_embeds=tokens_embed, output_hidden_states=True, attention_mask=attn_mask
-    )
-    probed_layer = result.hidden_states[LAYER + 1]  # (batch, seq, d_model)
-    probed_acts = probed_layer[t.arange(BATCH_SIZE), n_tokens - 1]  # (batch, d_model)
     # TODO: Check with steering-arena author their layer numbering convention for probe.
-    probed_acts = probed_acts.cpu().float()  # probe_dir also on CPU
-
-    norm = t.linalg.norm(probed_acts, axis=-1)  # (batch,)
-    scores = (
-        einops.einsum(probed_acts, probe_dir, "batch d_model, d_model -> batch") / norm
+    scores = compute_scores_batch(
+        trunk,
+        ctrl_embed,
+        sfx_embed,
+        t.tensor(sfx_enc["attention_mask"]),
+        n_sfx_tokens,
+        probe_dir,
+        LAYER,
     )
-    return ctrl_tokens_onehot, scores.mean()
+    return ctrl_tokens_onehot, scores[0]
 
 
 # %%
@@ -352,8 +342,7 @@ while True:
         # Score all candidates in one (chunked) batched forward instead of looping.
         cand_scores = compute_scores_batch(
             trunk,
-            model.get_input_embeddings(),
-            candidates,
+            model.get_input_embeddings()(candidates),
             sfx_embed,
             t.tensor(sfx_enc["attention_mask"]),
             n_sfx_tokens,

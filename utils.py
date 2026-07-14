@@ -71,8 +71,7 @@ def truncate_to_layer(model, layer: int):
 
 def compute_scores_batch(
     trunk,
-    embed,
-    ctrl_ids,
+    ctrl_embed,
     sfx_embed,
     sfx_mask,
     n_sfx_tokens,
@@ -80,27 +79,34 @@ def compute_scores_batch(
     layer: int,
     chunk=None,
 ):
-    """Mean probe score for a batch of candidate control-token sequences.
+    """Mean-over-suffix probe score for each of n_cand candidate prefixes.
 
-    Evaluates every candidate in one (chunked) forward pass instead of looping,
-    which is where the speedup comes from. All candidates share the same fixed
+    Each candidate prefix is scored against all n_sfx suffixes in one (chunked)
+    batched forward -- packing candidates into a single forward instead of
+    looping is where the speedup comes from. All candidates share the same fixed
     suffixes; only the control-token prefix varies.
 
+    Takes control embeddings directly (rather than token ids + an embedding
+    layer) so the two callers differ only in how they produce ctrl_embed: the
+    batch candidate scorer feeds an integer embed() lookup, while the
+    single-prefix GCG gradient path (compute_score) feeds a differentiable
+    one-hot @ embedding-weight product. This function is differentiable w.r.t.
+    ctrl_embed, so gradients flow back through it in that case.
+
     :param trunk: model.base_model (returns hidden_states, no lm_head)
-    :param embed: input embedding layer, for looking up control-token embeddings
-    :param ctrl_ids: (n_cand, ctrl_seq) candidate control token ids
+    :param ctrl_embed: (n_cand, ctrl_seq, d_model) candidate prefix embeddings
     :param sfx_embed: (n_sfx, sfx_seq, d_model) precomputed suffix embeddings
     :param sfx_mask: (n_sfx, sfx_seq) suffix attention mask
     :param n_sfx_tokens: (n_sfx,) real (unpadded) suffix token counts
     :param probe_dir: (d_model,) unit probe direction
     :param layer: probe layer index (reads hidden_states[layer + 1])
     :param chunk: candidates per forward pass (memory knob); None = all at once
-    :returns: (n_cand,) float32 mean score per candidate
+    :returns: (n_cand,) float32 mean-over-suffix score per candidate
     """
     device = sfx_embed.device
     # n_cand -> # of candidates; ctrl_seq -> # of controlled tokens
     # n_sfx -> # of suffixs to test; sfx_seq -> sequence index in suffix
-    n_cand, ctrl_seq = ctrl_ids.shape
+    n_cand, ctrl_seq, _ = ctrl_embed.shape
     n_sfx, sfx_seq, d_model = sfx_embed.shape
     seq = ctrl_seq + sfx_seq
 
@@ -108,14 +114,14 @@ def compute_scores_batch(
     gather_pos = n_sfx_tokens + ctrl_seq - 1  # (n_sfx,)
     ctrl_mask = t.ones(n_sfx, ctrl_seq, dtype=sfx_mask.dtype)
 
-    scores = t.empty(n_cand, device=device, dtype=t.float32)
-    chunk = n_cand if chunk is None else chunk
-    # t.split returns views sharing storage, so scores_batch[:] writes into scores.
-    for cids, scores_batch in zip(t.split(ctrl_ids, chunk), t.split(scores, chunk)):
-        c = cids.shape[0]  # chunk size; may be smaller than `chunk` for last iter
+    if chunk is None:
+        chunk = n_cand
 
-        ctrl_embed = embed(cids)  # (c, ctrl_seq, d_model)
-        ctrl_e = ctrl_embed[:, None].expand(c, n_sfx, ctrl_seq, d_model)
+    score_chunks = []
+    for ce in t.split(ctrl_embed, chunk):
+        c = ce.shape[0]  # chunk size; may be smaller than `chunk` for last iter
+
+        ctrl_e = ce[:, None].expand(c, n_sfx, ctrl_seq, d_model)
         sfx_e = sfx_embed[None].expand(c, n_sfx, sfx_seq, d_model)
         inp = t.cat([ctrl_e, sfx_e], dim=2).reshape(c * n_sfx, seq, d_model)
 
@@ -127,9 +133,12 @@ def compute_scores_batch(
         out = trunk(inputs_embeds=inp, attention_mask=attn, output_hidden_states=True)
         h = out.hidden_states[layer + 1]  # (c*n_sfx, seq, d_model)
 
+        # recall probe_dir is on CPU and float32
         pos = gather_pos[None].expand(c, n_sfx).reshape(c * n_sfx)
         acts = h[t.arange(c * n_sfx), pos].cpu().float()  # (c*n_sfx, d_model)
         norm = t.linalg.norm(acts, dim=-1)
+
         sc = (acts @ probe_dir) / norm  # (c*n_sfx,)
-        scores_batch[:] = sc.reshape(c, n_sfx).mean(dim=1)
-    return scores
+        score_chunks.append(sc.reshape(c, n_sfx).mean(dim=1))
+
+    return t.cat(score_chunks)
