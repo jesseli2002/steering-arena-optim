@@ -1,6 +1,6 @@
 # %%
 """
-Optimize the prompt using "Greedy Coordinate Gradients
+Optimize the prompt using "Greedy Coordinate Gradients"
 """
 
 import argparse
@@ -139,10 +139,7 @@ else:
     D_VOCAB = model.config.vocab_size
 
 # Some algorithm hyperparameters
-N_CONTROLLED_TOKENS = 64
-# TODO: these are actually set in the optimization loop
-N_TOPK_REPL = 256  # K in Top-K promising token substitutions
-BATCH_SIZE_OPTIM = 512  # Batch size in optimization
+N_CONTROLLED_TOKENS = 24
 
 # Candidates scored per forward pass. Main memory/speed knob: higher packs more
 # candidates into a single batched forward (faster) but uses more activation
@@ -154,13 +151,16 @@ if SMOKE:  # for debugging
 
 # Checkpointing / experiment tracking
 RESUME_FROM = None  # None = fresh run; else path to an existing run dir to continue
-RESUME_FROM = "data/optimization/2026-07-13T14-11-04Z"  # None = fresh run; else path to an existing run dir to continue
+# RESUME_FROM = "data/optimization/2026-07-13T14-11-04Z"  # None = fresh run; else path to an existing run dir to continue
 USE_WANDB = True  # attempts wandb; degrades to a no-op if import/init/log fails
 
 # %%
 # sfx -> suffix tokens
 sfx_enc = tokenizer(
-    [" " + suffix for suffix in suffixes], padding=True, return_tensors="pt"
+    [" " + suffix for suffix in suffixes],
+    padding=True,
+    return_tensors="pt",
+    add_special_tokens=False,
 )
 n_sfx_tokens = sfx_enc["attention_mask"].sum(axis=1)  # (batch, )
 sfx_tokens = sfx_enc["input_ids"]  # (batch, seq)
@@ -252,8 +252,6 @@ if USE_WANDB:
             project="steering-arena-optim",
             config={
                 "N_CONTROLLED_TOKENS": N_CONTROLLED_TOKENS,
-                "N_TOPK_REPL": N_TOPK_REPL,
-                "BATCH_SIZE_OPTIM": BATCH_SIZE_OPTIM,
                 "model_id": MODEL_NAME,
                 "layer": LAYER,
                 "smoke": SMOKE,

@@ -33,6 +33,7 @@ This environment is in a sandbox. Writes and sensitive reads outside this direct
 - The safety classifier favors simple, single-purpose calls over multi-command bundles. Avoid needing the classifier by construction:
     - For read tasks use native tools (Read/Grep/Glob). Write-capabale tools like `sed` are not automatically approved, even if individual calls are read-only.
     - `black` is allow-listed only via its absolute path `/home/jesse/v/bin/black` (guards against a shadowed `black` on PATH); invoke it that way. `black --check <file>` doubles as a read-only syntax check and is preferred over `py_compile`.
+- If you run into permissions issues, prefer trying to solve the cause (and ask the user to help debug permissions), rather than working around the symptoms and trying a bunch of techniques to get past them.
 
 ### vast_setup
 `vast_setup/` is a separate nested git repo. To modify its files, `/cd` into it first — editing it from an outer-rooted session hits worktree-isolation friction. IF WORKING ON FILES IN `vast_setup/`, REFUSE WORK UNTIL USER HAS `/cd`'D INTO `vast_setup/`.
