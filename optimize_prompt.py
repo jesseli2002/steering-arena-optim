@@ -278,7 +278,7 @@ def score_candidates(candidates):
     def score_shard(idx_cids):
         r, cids = idx_cids
         rep, c = replicas[r], replica_consts[r]
-        with t.no_grad():
+        with t.inference_mode():
             ctrl_embed = rep.get_input_embeddings()(cids.to(c["in_dev"]))
             return compute_scores_batch(
                 rep.base_model,
@@ -406,9 +406,7 @@ while True:
     # Note: GCG paper https://arxiv.org/abs/2307.15043 formulates the problem as loss minimziation, but we're doing score maximization => no gradient negation
     topk_vals, topk_idxs = score_grad.topk(N_TOPK_REPL, axis=-1)  # (seq, topk)
 
-    # no_grad (not inference_mode) so candidate tensors can cross the replica
-    # scoring threads without tripping inference-tensor restrictions.
-    with t.no_grad():
+    with t.inference_mode():
         # For each optimization slot, uniformly pick a random control position and
         # a random replacement from that position's top-k promising substitutions.
         repl_seq_idx = t.randint(
