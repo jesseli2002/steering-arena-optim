@@ -126,7 +126,8 @@ tokenizer.padding_side = "right"
 
 max_memory = None
 # max_memory = {i: "20GiB" for i in range(4)}
-max_memory = {0: "15GiB", 1: "17GiB", 2: "20GiB", 3: "20GiB"}
+if not SMOKE:
+    max_memory = {0: "15GiB", 1: "17GiB", 2: "20GiB", 3: "20GiB"}
 print(f"{max_memory=}")
 
 model = AutoModelForCausalLM.from_pretrained(
