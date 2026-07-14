@@ -52,8 +52,7 @@ assert (
 
 
 HF_TOKEN = os.getenv("HF_TOKEN")
-if not args.smoke:
-    assert HF_TOKEN, f"Please set HF_TOKEN in .env"
+assert HF_TOKEN, f"Please set HF_TOKEN in .env"
 
 device = t.device("cuda" if t.cuda.is_available() else "cpu")
 # device = t.device("cpu")  # temporary override
@@ -157,7 +156,8 @@ with t.no_grad():
     base_acts = base_h[t.arange(len(suffixes)), base_pos].cpu().float()
     baseline_scores = (base_acts @ probe_dir) / t.linalg.norm(base_acts, dim=-1)
 baseline_mean = baseline_scores.mean().item()
-print(f"baseline (probe-alone) mean cosine: {baseline_mean:+.6f}")
+print(f"baseline (suffix-alone) mean cosine: {baseline_mean:+.6f}")
+print(f"mean suffix-alone token length: {n_sfx_tokens.float().mean()}")
 
 
 def load_prompts_json():
@@ -166,9 +166,13 @@ def load_prompts_json():
 
 # We'll just add our scores directly to results.
 # Note - expect to get slight differences due to tokenization quirks where controlled prompt gets prepended to suffix.
-results = load_prompts_json()
+report = {
+    "results": load_prompts_json(),
+    "mean_suffix_tokens": n_sfx_tokens.float().mean().item(),
+    "baseline_score": baseline_mean,
+}
 
-for entry in results:
+for entry in report["results"]:
     prompt = entry["prompt"]
 
     ctrl_tokens = tokenizer(prompt, return_tensors="pt")["input_ids"]
@@ -197,5 +201,5 @@ for entry in results:
     else:
         print(f"  estimate={score_estimate:+.6f}  {prompt!r}")
 
-REPORT_FILE.write_text(json.dumps(results, indent=2))
+REPORT_FILE.write_text(json.dumps(report, indent=2))
 print(f"wrote {REPORT_FILE}")
