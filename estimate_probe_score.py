@@ -52,7 +52,8 @@ assert (
 
 
 HF_TOKEN = os.getenv("HF_TOKEN")
-assert HF_TOKEN, f"Please set HF_TOKEN in .env"
+if not args.smoke:
+    assert HF_TOKEN, f"Please set HF_TOKEN in .env"
 
 device = t.device("cuda" if t.cuda.is_available() else "cpu")
 # device = t.device("cpu")  # temporary override
