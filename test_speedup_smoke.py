@@ -112,8 +112,7 @@ def test_batched_scores_match_reference(model, suffixes, probe_dir, chunk):
     ref = t.stack([reference_score(cands[i]) for i in range(M)])
     got = compute_scores_batch(
         model.base_model,
-        model.get_input_embeddings(),
-        cands,
+        model.get_input_embeddings()(cands),
         sfx_embed,
         sfx_mask,
         n_sfx,
@@ -122,3 +121,30 @@ def test_batched_scores_match_reference(model, suffixes, probe_dir, chunk):
         chunk=chunk,
     )
     assert t.allclose(got, ref, atol=1e-5)
+
+
+def test_gradient_flows_to_onehot(model, suffixes, probe_dir):
+    """compute_scores_batch is the GCG gradient path: feeding control embeddings
+    built from a differentiable one-hot must yield a finite, non-zero gradient on
+    that one-hot (mirrors optimize_prompt.compute_score_gradient)."""
+    truncate_to_layer(model, LAYER)
+    sfx_embed, sfx_mask, n_sfx = suffixes
+
+    g = t.Generator().manual_seed(3)
+    ctrl_ids = t.randint(0, model.config.vocab_size, (N_CTRL,), generator=g)
+
+    onehot = t.zeros((N_CTRL, model.config.vocab_size))
+    onehot[t.arange(N_CTRL), ctrl_ids] = 1
+    onehot.requires_grad = True
+    ctrl_embed = (onehot @ model.get_input_embeddings().weight)[None]  # (1, N_CTRL, d)
+
+    scores = compute_scores_batch(
+        model.base_model, ctrl_embed, sfx_embed, sfx_mask, n_sfx, probe_dir, LAYER
+    )
+    assert scores.shape == (1,)
+    scores[0].backward()
+
+    grad = onehot.grad
+    assert grad is not None
+    assert t.isfinite(grad).all()
+    assert (grad != 0).any()

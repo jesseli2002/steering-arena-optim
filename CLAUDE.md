@@ -11,7 +11,7 @@ Do not search for API keys/tokens oustide of this directory.
 ## Style notes
 - When dividing scripts into sections, do not number them (e.g. Step 1, Step 2) since sections can change.
 - Avoid unnecessary use of non-ASCII characters in comments
-- Format Python code with Black
+- Format Python code with Black. Note that docstrings aren't subject to the 88-column rule, so don't manually wrap those to avoid generating spurious diffs.
 - torch tensors on GPU should be indexed with CPU - not only is this allowed, it's less brittle, since if the indexing tensor is on a different GPU than the indexed tensor, the operation fails.
 
 
