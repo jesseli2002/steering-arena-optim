@@ -159,9 +159,11 @@ USE_WANDB = True  # attempts wandb; degrades to a no-op if import/init/log fails
 
 # %%
 # sfx -> suffix tokens
-sfx_enc = tokenizer([" " + suffix for suffix in suffixes], padding=True)
-n_sfx_tokens = t.tensor(sfx_enc["attention_mask"]).sum(axis=1)  # (batch, )
-sfx_tokens = t.tensor(sfx_enc["input_ids"])  # (batch, seq)
+sfx_enc = tokenizer(
+    [" " + suffix for suffix in suffixes], padding=True, return_tensors="pt"
+)
+n_sfx_tokens = sfx_enc["attention_mask"].sum(axis=1)  # (batch, )
+sfx_tokens = sfx_enc["input_ids"]  # (batch, seq)
 
 #  constant
 sfx_embed = model.get_input_embeddings()(sfx_tokens.to(device))
@@ -202,7 +204,7 @@ def compute_score(ctrl_token_ids, req_grad: bool):
         trunk,
         ctrl_embed,
         sfx_embed,
-        t.tensor(sfx_enc["attention_mask"]),
+        sfx_enc["attention_mask"],
         n_sfx_tokens,
         probe_dir,
         LAYER,
@@ -344,7 +346,7 @@ while True:
             trunk,
             model.get_input_embeddings()(candidates),
             sfx_embed,
-            t.tensor(sfx_enc["attention_mask"]),
+            sfx_enc["attention_mask"],
             n_sfx_tokens,
             probe_dir,
             LAYER,
