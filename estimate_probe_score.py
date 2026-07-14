@@ -18,13 +18,10 @@ def parse_args(argv=None):
 args = parse_args()
 
 # %%
-import hashlib
 import json
 import os
 from pathlib import Path
 import gc
-import time
-import datetime as dt
 
 import numpy as np
 import torch as t
@@ -33,8 +30,6 @@ from dotenv import load_dotenv
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from utils import (
-    cos_sim,
-    compose,
     load_direction,
     load_prompt_suffixes,
     truncate_to_layer,
@@ -99,9 +94,6 @@ if meta.get("placeholder"):
 MODEL_NAME = meta["model_id"]
 LAYER = int(meta["layer"])
 
-CACHE_DIR = REPO_ROOT / ".cache" / "acts" / MODEL_NAME.replace("/", "_")
-CACHE_DIR.mkdir(parents=True, exist_ok=True)
-
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, token=HF_TOKEN)
 tokenizer.pad_token = tokenizer.eos_token
 tokenizer.padding_side = "right"
@@ -126,26 +118,45 @@ trunk = model.base_model
 gc.collect()
 t.cuda.empty_cache()
 
-if SMOKE:
-    NUM_LAYERS = model.config.n_layer
-    D_MODEL = model.config.n_embd
-    D_VOCAB = model.config.vocab_size
-else:
-    NUM_LAYERS = model.config.num_hidden_layers
-    D_MODEL = model.config.hidden_size
-    D_VOCAB = model.config.vocab_size
-
-
-# sfx -> suffix tokens
+# sfx -> suffix tokens for the composed (ctrl + " " + suffix) forward pass.
+# add_special_tokens=False: the sequence's BOS comes from ctrl_tokens below
+# (which is first in the concatenation); without this, tokenizers that
+# auto-prepend BOS (e.g. Llama/OLMo-style) would insert a second one here,
+# mid-sequence.
 sfx_enc = tokenizer(
-    [" " + suffix for suffix in suffixes], padding=True, return_tensors="pt"
+    [" " + suffix for suffix in suffixes],
+    padding=True,
+    add_special_tokens=False,
+    return_tensors="pt",
 )
-n_sfx_tokens = sfx_enc["attention_mask"].sum(axis=1)  # (batch, )
-sfx_tokens = sfx_enc["input_ids"]  # (batch, seq)
+sfx_mask = sfx_enc["attention_mask"]  # (n_sfx, seq)
+n_sfx_tokens = sfx_mask.sum(axis=1)  # (n_sfx,)
+sfx_tokens = sfx_enc["input_ids"]  # (n_sfx, seq)
 
 #  constant
 sfx_embed = model.get_input_embeddings()(sfx_tokens.to(device))
-n_sfx_tokens = sfx_enc["attention_mask"].sum(axis=1)
+
+# Baseline: cos(R(suffix alone)[-1], d) for each suffix, tokenized standalone
+# (own BOS, no leading space) -- matches the server's shift score,
+# score(seq) = mean_i cos(R(seq+" "+suffix_i))  - cos(R(suffix_i)).
+# Mean is linear, so it's enough to compute one baseline scalar up front
+# and subtract it from every candidate's already suffix-averaged score,
+# rather than threading per-suffix baselines through compute_scores_batch.
+base_enc = tokenizer(suffixes, padding=True, return_tensors="pt")
+base_mask = base_enc["attention_mask"]
+n_base_tokens = base_mask.sum(axis=1)
+with t.no_grad():
+    base_out = trunk(
+        input_ids=base_enc["input_ids"].to(device),
+        attention_mask=base_mask.to(device),
+        output_hidden_states=True,
+    )
+    base_h = base_out.hidden_states[LAYER + 1]  # (n_sfx, seq, d_model)
+    base_pos = n_base_tokens - 1
+    base_acts = base_h[t.arange(len(suffixes)), base_pos].cpu().float()
+    baseline_scores = (base_acts @ probe_dir) / t.linalg.norm(base_acts, dim=-1)
+baseline_mean = baseline_scores.mean().item()
+print(f"baseline (probe-alone) mean cosine: {baseline_mean:+.6f}")
 
 
 def load_prompts_json():
@@ -162,7 +173,7 @@ for entry in results:
     ctrl_tokens = tokenizer(prompt, return_tensors="pt")["input_ids"]
     ctrl_embed = model.get_input_embeddings()(ctrl_tokens.to(device))
 
-    scores = compute_scores_batch(
+    raw_score = compute_scores_batch(
         trunk,
         ctrl_embed,
         sfx_embed,
@@ -171,9 +182,19 @@ for entry in results:
         probe_dir,
         layer=LAYER,
         chunk=1,
-    )
+    ).item()
+    score_estimate = raw_score - baseline_mean
 
     # Modify entry in place
-    entry["score_estimate"] = scores.item()
+    entry["score_estimate"] = score_estimate
+    gt = entry.get("score")
+    if gt is not None:
+        entry["diff"] = score_estimate - gt
+        print(
+            f"  estimate={score_estimate:+.6f}  gt={gt:+.6f}  diff={score_estimate - gt:+.6f}  {prompt!r}"
+        )
+    else:
+        print(f"  estimate={score_estimate:+.6f}  {prompt!r}")
 
 REPORT_FILE.write_text(json.dumps(results, indent=2))
+print(f"wrote {REPORT_FILE}")
