@@ -126,7 +126,7 @@ def test_batched_scores_match_reference(model, suffixes, probe_dir, chunk):
 def test_gradient_flows_to_onehot(model, suffixes, probe_dir):
     """compute_scores_batch is the GCG gradient path: feeding control embeddings
     built from a differentiable one-hot must yield a finite, non-zero gradient on
-    that one-hot (mirrors optimize_prompt.compute_score)."""
+    that one-hot (mirrors optimize_prompt.compute_score_gradient)."""
     truncate_to_layer(model, LAYER)
     sfx_embed, sfx_mask, n_sfx = suffixes
 

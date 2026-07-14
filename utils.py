@@ -89,7 +89,7 @@ def compute_scores_batch(
     Takes control embeddings directly (rather than token ids + an embedding
     layer) so the two callers differ only in how they produce ctrl_embed: the
     batch candidate scorer feeds an integer embed() lookup, while the
-    single-prefix GCG gradient path (compute_score) feeds a differentiable
+    single-prefix GCG gradient path (compute_score_gradient) feeds a differentiable
     one-hot @ embedding-weight product. This function is differentiable w.r.t.
     ctrl_embed, so gradients flow back through it in that case.
 

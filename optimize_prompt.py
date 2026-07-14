@@ -177,24 +177,25 @@ ctrl_token_ids = t.full(
 # Optimization loop
 
 
-def compute_score(ctrl_token_ids, req_grad: bool):
-    """
-    Computes mean probe score given tokens in prompt prefix.
+def compute_score_gradient(ctrl_token_ids):
+    """Current mean probe score and its gradient w.r.t. the control tokens.
 
-    Thin wrapper over compute_scores_batch (the n_cand == 1 case): the only
-    difference from candidate scoring is that the control embeddings come from a
-    differentiable one-hot @ embedding-weight product, so the score is
-    differentiable w.r.t. ctrl_tokens_onehot for the GCG gradient.
+    Builds a one-hot encoding of the control prefix, scores it through
+    compute_scores_batch (the n_cand == 1 case), and backprops to get the
+    gradient of the score w.r.t. that one-hot -- the GCG signal for which token
+    substitutions most increase the score.
 
-    :param ctrl_token_ids: Tokens in prompt prefix
-    :req_grad: Set to True to enable tracking gradient of ctrl_tokens_onehot
+    :param ctrl_token_ids: (N_CONTROLLED_TOKENS,) current prompt-prefix tokens
+    :returns: (score, grad) where score is the float mean probe score and grad
+        is the (N_CONTROLLED_TOKENS, D_VOCAB) gradient of the score w.r.t. the
+        control-token one-hot.
     """
     # Define controlled tokens
     ctrl_tokens_onehot = t.zeros(  # (seq, d_vocab)
         (N_CONTROLLED_TOKENS, D_VOCAB), dtype=dtype, device=device
     )
     ctrl_tokens_onehot[t.arange(N_CONTROLLED_TOKENS), ctrl_token_ids] = 1
-    ctrl_tokens_onehot.requires_grad = req_grad
+    ctrl_tokens_onehot.requires_grad = True
 
     embed_weights = model.get_input_embeddings().weight  # (d_vocab, d_model)
     ctrl_embed = (ctrl_tokens_onehot @ embed_weights)[None]  # (1, seq, d_model)
@@ -209,7 +210,9 @@ def compute_score(ctrl_token_ids, req_grad: bool):
         probe_dir,
         LAYER,
     )
-    return ctrl_tokens_onehot, scores[0]
+    mean_score = scores[0]
+    mean_score.backward()  # Maximize score => pick top k gradients
+    return mean_score.item(), ctrl_tokens_onehot.grad
 
 
 # %%
@@ -315,15 +318,10 @@ while True:
     ids_scored = ctrl_token_ids
     prompt_str = decode_prompt(ids_scored)
 
-    ctrl_tokens_onehot, mean_score_curr = compute_score(ctrl_token_ids, req_grad=True)
-    score_curr = mean_score_curr.detach().item()
-
-    mean_score_curr.backward()  # Maximize score => pick top k gradients
+    score_curr, score_grad = compute_score_gradient(ctrl_token_ids)
 
     # Note: GCG paper https://arxiv.org/abs/2307.15043 formulates the problem as loss minimziation, but we're doing score maximization => no gradient negation
-    topk_vals, topk_idxs = ctrl_tokens_onehot.grad.topk(  # (seq, topk)
-        N_TOPK_REPL, axis=-1
-    )
+    topk_vals, topk_idxs = score_grad.topk(N_TOPK_REPL, axis=-1)  # (seq, topk)
 
     with t.inference_mode():
         # For each optimization slot, uniformly pick a random control position and
