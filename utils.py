@@ -3,7 +3,7 @@ from pathlib import Path
 
 import numpy as np
 import torch as t
-from jaxtyping import Float
+from jaxtyping import Float, Int
 
 
 # %%
@@ -72,14 +72,14 @@ def truncate_to_layer(model, layer: int):
 
 def compute_scores_batch(
     trunk,
-    ctrl_embed,
-    sfx_embed,
-    sfx_mask,
-    n_sfx_tokens,
-    probe_dir,
+    ctrl_embed: Float[t.Tensor, "n_cand ctrl_seq d_model"],
+    sfx_embed: Float[t.Tensor, "n_sfx sfx_seq d_model"],
+    sfx_mask: Int[t.Tensor, "n_sfx sfx_seq"],
+    n_sfx_tokens: Int[t.Tensor, "n_sfx"],
+    probe_dir: Float[t.Tensor, "d_model"],
     layer: int,
-    chunk=None,
-):
+    chunk: int | None = None,
+) -> Float[t.Tensor, "n_cand"]:
     """Mean-over-suffix probe score for each of n_cand candidate prefixes.
 
     Each candidate prefix is scored against all n_sfx suffixes in one (chunked) batched forward. All candidates share the same fixed
@@ -88,14 +88,19 @@ def compute_scores_batch(
     This function is differentiable w.r.t. ctrl_embed, so gradients can flow back through it.
 
     :param trunk: model.base_model (returns hidden_states, no lm_head)
-    :param ctrl_embed: (n_cand, ctrl_seq, d_model) candidate prefix embeddings
-    :param sfx_embed: (n_sfx, sfx_seq, d_model) precomputed suffix embeddings
-    :param sfx_mask: (n_sfx, sfx_seq) suffix attention mask
-    :param n_sfx_tokens: (n_sfx,) real (unpadded) suffix token counts
-    :param probe_dir: (d_model,) unit probe direction
+    :param ctrl_embed: candidate prefix embeddings; dtype/device match the model's
+        embedding layer (e.g. bfloat16 on the model's device). May require grad --
+        this is the tensor gradients flow back through.
+    :param sfx_embed: precomputed suffix embeddings; same dtype/device as ctrl_embed.
+    :param sfx_mask: suffix attention mask; integer dtype, CPU (as produced by the
+        tokenizer -- not moved to the model's device).
+    :param n_sfx_tokens: real (unpadded) suffix token counts; integer dtype, CPU.
+    :param probe_dir: unit probe direction; float32, CPU (probe scoring is done on
+        CPU by convention).
     :param layer: probe layer index (reads hidden_states[layer + 1])
     :param chunk: candidates per forward pass (memory knob); None = all at once
-    :returns: (n_cand,) float32 mean-over-suffix score per candidate
+    :returns: mean-over-suffix score per candidate; float32, CPU (activations are
+        moved to CPU before the dot product with probe_dir).
     """
     device = sfx_embed.device
     # n_cand -> # of candidates; ctrl_seq -> # of controlled tokens
