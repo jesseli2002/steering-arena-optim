@@ -14,10 +14,6 @@ Do not search for API keys/tokens oustide of this directory.
 - Format Python code with Black. Note that docstrings aren't subject to the 88-column rule, so don't manually wrap those to avoid generating spurious diffs.
 - torch tensors on GPU should be indexed with CPU - not only is this allowed, it's less brittle, since if the indexing tensor is on a different GPU than the indexed tensor, the operation fails.
 
-
-## vast_setup
-`vast_setup/` is a separate nested git repo. To modify its files, `/cd` into it first — editing it from an outer-rooted session hits worktree-isolation friction. If asked to change vast_setup while rooted at the outer repo, remind the user to `/cd vast_setup` before starting.
-
 ## Background processes
 Each Bash call runs in its own PID namespace, so a sandboxed `ps` sees only its own invocation, and plain `&`/`nohup`/`setsid` processes are killed when the invocation ends.
 - Never use `ps` to check whether a process you launched is still alive; empty output means "not visible from here," not "dead."
