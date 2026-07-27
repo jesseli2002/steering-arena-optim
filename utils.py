@@ -195,7 +195,16 @@ def build_replicas(model, groups, mem_fraction=0.9):
     :returns: list of dispatched replica models, one per group
     """
     from accelerate import dispatch_model, infer_auto_device_map
+    from accelerate.hooks import remove_hook_from_module
 
+    # The source model still carries accelerate's dispatch hooks from its
+    # initial device_map="auto" load; those hooks pin each submodule's
+    # execution device. Detach them first, or copy.deepcopy below propagates
+    # that stale per-submodule placement into every replica, and the fresh
+    # dispatch_model call for each replica layers new hooks on top of the old
+    # ones instead of replacing them -- leaving some submodules on their
+    # original devices while others follow the new device map.
+    remove_hook_from_module(model, recurse=True)
     model = model.to("cpu")  # truncated weights now in host RAM
     t.cuda.empty_cache()
     replicas = []
