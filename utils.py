@@ -40,6 +40,15 @@ def load_prompt_suffixes(path) -> list[str]:
     return obj["prompts"] if isinstance(obj, dict) else list(obj)
 
 
+def _decoder_blocks_attr(trunk) -> str:
+    """Name of the attribute holding trunk's decoder blocks: `.layers` (Llama/OLMo-style) or `.h` (GPT-2)."""
+    if hasattr(trunk, "layers"):
+        return "layers"
+    if hasattr(trunk, "h"):
+        return "h"
+    raise ValueError(f"cannot locate decoder blocks on {type(trunk).__name__}")
+
+
 def truncate_to_layer(model, layer: int):
     """
     Monkey-patches model in-place, dropping transformer blocks above `layer` so the forward stops right after
@@ -56,12 +65,7 @@ def truncate_to_layer(model, layer: int):
     probe reads (identical to the untruncated model).
     """
     trunk = model.base_model
-    if hasattr(trunk, "layers"):
-        attr = "layers"
-    elif hasattr(trunk, "h"):
-        attr = "h"
-    else:
-        raise ValueError(f"cannot locate decoder blocks on {type(trunk).__name__}")
+    attr = _decoder_blocks_attr(trunk)
     blocks = getattr(trunk, attr)
     assert layer + 1 <= len(blocks), f"layer {layer} exceeds model depth {len(blocks)}"
     keep = min(layer + 2, len(blocks))
@@ -118,29 +122,44 @@ def compute_scores_batch(
     if chunk is None:
         chunk = n_cand
 
-    score_chunks = []
-    for ce in t.split(ctrl_embed, chunk):
-        c = ce.shape[0]  # chunk size; may be smaller than `chunk` for last iter
+    # hidden_states[layer + 1] is the output of decoder block `layer` (0-indexed;
+    # hidden_states[0] is the embedding output). output_hidden_states=True would
+    # materialize and hold *every* block's output at once (all ~layer+2 kept
+    # blocks) even though only this one is read; a forward hook captures just
+    # the one tensor we need instead.
+    target_block = getattr(trunk, _decoder_blocks_attr(trunk))[layer]
+    captured = {}
 
-        ctrl_e = ce[:, None].expand(c, n_sfx, ctrl_seq, d_model)
-        sfx_e = sfx_embed[None].expand(c, n_sfx, sfx_seq, d_model)
-        inp = t.cat([ctrl_e, sfx_e], dim=2).reshape(c * n_sfx, seq, d_model)
+    def _capture(module, inputs, output):
+        captured["h"] = output[0] if isinstance(output, tuple) else output
 
-        # Build attention mask
-        cm = ctrl_mask[None].expand(c, n_sfx, ctrl_seq)
-        sm = sfx_mask[None].expand(c, n_sfx, sfx_seq)
-        attn = t.cat([cm, sm], dim=2).reshape(c * n_sfx, seq)
+    handle = target_block.register_forward_hook(_capture)
+    try:
+        score_chunks = []
+        for ce in t.split(ctrl_embed, chunk):
+            c = ce.shape[0]  # chunk size; may be smaller than `chunk` for last iter
 
-        out = trunk(inputs_embeds=inp, attention_mask=attn, output_hidden_states=True)
-        h = out.hidden_states[layer + 1]  # (c*n_sfx, seq, d_model)
+            ctrl_e = ce[:, None].expand(c, n_sfx, ctrl_seq, d_model)
+            sfx_e = sfx_embed[None].expand(c, n_sfx, sfx_seq, d_model)
+            inp = t.cat([ctrl_e, sfx_e], dim=2).reshape(c * n_sfx, seq, d_model)
 
-        # recall probe_dir is on CPU and float32
-        pos = gather_pos[None].expand(c, n_sfx).reshape(c * n_sfx)
-        acts = h[t.arange(c * n_sfx), pos].cpu().float()  # (c*n_sfx, d_model)
-        norm = t.linalg.norm(acts, dim=-1)
+            # Build attention mask
+            cm = ctrl_mask[None].expand(c, n_sfx, ctrl_seq)
+            sm = sfx_mask[None].expand(c, n_sfx, sfx_seq)
+            attn = t.cat([cm, sm], dim=2).reshape(c * n_sfx, seq)
 
-        sc = (acts @ probe_dir) / norm  # (c*n_sfx,)
-        score_chunks.append(sc.reshape(c, n_sfx).mean(dim=1))
+            trunk(inputs_embeds=inp, attention_mask=attn)
+            h = captured["h"]  # (c*n_sfx, seq, d_model)
+
+            # recall probe_dir is on CPU and float32
+            pos = gather_pos[None].expand(c, n_sfx).reshape(c * n_sfx)
+            acts = h[t.arange(c * n_sfx), pos].cpu().float()  # (c*n_sfx, d_model)
+            norm = t.linalg.norm(acts, dim=-1)
+
+            sc = (acts @ probe_dir) / norm  # (c*n_sfx,)
+            score_chunks.append(sc.reshape(c, n_sfx).mean(dim=1))
+    finally:
+        handle.remove()
 
     return t.cat(score_chunks)
 
