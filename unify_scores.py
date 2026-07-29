@@ -18,9 +18,15 @@ for result_arena, result_optim in zip(report_arena["results"], report_optim["res
     arena_score = result_arena["local_score"]
     optim_score = result_optim["score_estimate"]
 
+    # modify in place, then resave to new report file
+    result_arena["gdg_implementation_score"] = optim_score
+
     ground_truths.append(ground_truth)
     arena_scores.append(arena_score)
     optim_scores.append(optim_score)
+
+with open(f"data/unified_score_check.json", "w") as f:
+    json.dump(report_arena, f)
 
 ground_truth = np.array(ground_truth)
 arena_scores = np.array(arena_scores)
@@ -42,7 +48,7 @@ ax.scatter(
 ax.scatter(
     np.full(N_DATA, 1) + JITTER * rng.uniform(-1, 1, size=N_DATA),
     optim_diff,
-    label="GCG implementation vs local_score.py",
+    label="GDG implementation vs local_score.py",
 )
 ax.legend()
 ax.set_ylabel("Difference in mean score")
