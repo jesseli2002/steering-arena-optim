@@ -29,6 +29,27 @@ def parse_args(argv=None):
         help="Force GPUs per replica "
         "(default: auto from model size vs card capacity)",
     )
+    ap.add_argument(
+        "--n-controlled-tokens",
+        type=int,
+        default=32,
+        help="Number of tokens in the optimized prompt prefix",
+    )
+    ap.add_argument(
+        "--cand-chunk",
+        type=int,
+        default=4,
+        help="Candidates scored per forward pass. Main memory/speed knob: higher "
+        "packs more candidates into a single batched forward (faster) but uses "
+        "more activation memory. Each unit of chunk costs one "
+        "current-prefix-sized forward.",
+    )
+    ap.add_argument(
+        "--resume-from",
+        type=str,
+        default=None,
+        help="Path to an existing run dir to continue (default: fresh run)",
+    )
     return ap.parse_args(argv)
 
 
@@ -143,17 +164,14 @@ else:
     D_VOCAB = model.config.vocab_size
 
 # Some algorithm hyperparameters
-N_CONTROLLED_TOKENS = 32
+N_CONTROLLED_TOKENS = args.n_controlled_tokens
 
-# Candidates scored per forward pass. Main memory/speed knob: higher packs more
-# candidates into a single batched forward (faster) but uses more activation
-# memory. Each unit of chunk costs one current-prefix-sized forward.
-CAND_CHUNK = 4
+# Candidates scored per forward pass. Main memory/speed knob: see --cand-chunk help.
+CAND_CHUNK = args.cand_chunk
 
-# Checkpointing / experiment tracking
-RESUME_FROM = None  # None = fresh run; else path to an existing run dir to continue
-# RESUME_FROM = "data/optimization/2026-07-27_tok24_anti"  # None = fresh run; else path to an existing run dir to continue
-# RESUME_FROM = "data/optimization/2026-07-28T12-04-21Z"
+# Checkpointing / experiment tracking. None = fresh run; else path to an
+# existing run dir to continue.
+RESUME_FROM = args.resume_from
 USE_WANDB = True  # attempts wandb; degrades to a no-op if import/init/log fails
 
 # Data-parallel replicas: each optimization step's candidate batch is sharded
