@@ -1,0 +1,27 @@
+{
+  "iter": 307,
+  "score": 0.10478714108467102,
+  "ctrl_token_ids": [
+    36857,
+    97047,
+    6122,
+    44268,
+    65731,
+    63868,
+    61251,
+    48789,
+    38623,
+    8981,
+    62786,
+    74596,
+    20230,
+    17184,
+    13828,
+    12361
+  ],
+  "prompt": " Jamie turquoise GoBanner:]\n\nWorkflow.respond-winemoji\"`\nAlice Serious\u306b.No\ufffd Instead",
+  "iter_time_s": 92.53322265995666,
+  "model_id": "allenai/Olmo-3-1125-32B",
+  "layer": 24,
+  "created_at": "2026-07-28T15:46:18.461977+00:00"
+}

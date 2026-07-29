@@ -13,18 +13,9 @@ At a high level, each iteration of the optimization algorithm works like this (A
     - Each candidate modifies a single token from the current `prefix`. Which token is modified is randomly selected (uniformly over token positions), and what it's modified to is also randomly selected (uniformly over the top `k` tokens we found in the previous step)
 - Across your `B` candidates, pick the best performing one as your new `prefix`.
 
-### Issues
-Some of the questions I had, and partial answers:
-
-1. What happens if the resulting prompt has a different tokenization than the one we optimized for?
-    - It kind of still works... Models seem to be at least somewhat robust to non-canonical tokenizations, although in the limit you'll see performance degradation
-    - Probably what you could do, is once you near convergence, run a tokenization pass, then re-initialize your optimizer with your new tokens. If you get more tokens as a result, try prepending the prefix.
-    - There's probably inevitably going to be some weird behaviour at the end, where you join the prefix to the suffix. I don't know if there's a smart way to deal with this, but also it maybe doesn't matter that much.
-2. Why sample uniformly over the top-k, rather than some smarter way that gives higher weight to higher gradients?
-    - It's easier, for one
-    - There's probably improvements in this direction. The optimization literature has been around for a long time; I wouldn't be surprised if there was some standard formula based on entropy or thermodynamics or something that gives optimal performance for some definition of optimal
-
-For basically all of these, I plan on trying some things out - stay tuned!
-
-
-
+## Code
+There's not any complicated structure here:
+- steering-arena is included as a git submodule, to get access to the underlying data (probe directions & test prompts)
+- optimize_prompt.py is the actual optimization script
+- print_best.py is a simple helper to print the best or latest prompt; I use it and pipe it into `xclip` so I can copy and paste it into the Steering Arena website
+- results/ holds selected training results (by default, the optimizer outputs results to `data/`, a gitignore'd directory)
