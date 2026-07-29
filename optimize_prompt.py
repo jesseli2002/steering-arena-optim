@@ -1,4 +1,3 @@
-# %%
 """
 Optimize the prompt using "Greedy Coordinate Gradients"
 """
@@ -35,8 +34,6 @@ def parse_args(argv=None):
 
 args = parse_args()
 
-# %%
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -53,8 +50,6 @@ from dotenv import load_dotenv
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from utils import (
-    cos_sim,
-    compose,
     load_direction,
     load_prompt_suffixes,
     truncate_to_layer,
@@ -63,7 +58,6 @@ from utils import (
     build_replicas,
 )
 
-# %%
 t.manual_seed(20260728)
 
 load_dotenv()
@@ -88,7 +82,6 @@ if device.type != "cuda":
     print("\033[93mWarning: CUDA not available, using CPU. This will be slow.\033[0m")
 
 
-# %%
 SMOKE = args.smoke
 
 # Load probe direction & season prompt suffix
@@ -98,7 +91,6 @@ if SMOKE:
 else:
     DIRECTION_FILE = ARENA_ROOT / "data/directions/d_olmo3_L24_logistic.npz"
 
-# %%
 # Device convention: Probe scoring is computed on CPU with float32.
 probe_dir, meta = load_direction(DIRECTION_FILE)
 probe_dir = t.tensor(
@@ -126,17 +118,9 @@ tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, token=HF_TOKEN)
 tokenizer.pad_token = tokenizer.eos_token
 tokenizer.padding_side = "right"
 
-max_memory = None
-# max_memory = {i: "20GiB" for i in range(4)}
-# if not SMOKE:
-#     max_memory = {0: "15GiB", 1: "17GiB", 2: "20GiB", 3: "20GiB"}
-print(f"{max_memory=}")
-
 model = AutoModelForCausalLM.from_pretrained(
-    MODEL_NAME, dtype=dtype, device_map="auto", max_memory=max_memory, token=HF_TOKEN
+    MODEL_NAME, dtype=dtype, device_map="auto", token=HF_TOKEN
 )
-# if model.device != device:  # in debugging, might use CPU
-#     model = model.to(device)
 
 model.requires_grad_(False)
 
@@ -149,7 +133,6 @@ trunk = model.base_model
 gc.collect()
 t.cuda.empty_cache()
 
-# %%
 if SMOKE:
     NUM_LAYERS = model.config.n_layer
     D_MODEL = model.config.n_embd
@@ -160,19 +143,12 @@ else:
     D_VOCAB = model.config.vocab_size
 
 # Some algorithm hyperparameters
-# N_CONTROLLED_TOKENS = 24
 N_CONTROLLED_TOKENS = 32
 
 # Candidates scored per forward pass. Main memory/speed knob: higher packs more
 # candidates into a single batched forward (faster) but uses more activation
 # memory. Each unit of chunk costs one current-prefix-sized forward.
-# CAND_CHUNK = 1 # fine, doesn't seem to warn
-# CAND_CHUNK = 2  # 26s per iter
 CAND_CHUNK = 4
-# CAND_CHUNK = 16
-
-if SMOKE:  # for debugging
-    BATCH_SIZE_OPTIM = 32
 
 # Checkpointing / experiment tracking
 RESUME_FROM = None  # None = fresh run; else path to an existing run dir to continue
@@ -204,7 +180,6 @@ else:
     # No CUDA, or a single group: keep today's single-model path unchanged.
     replicas = [model]
 
-# %%
 # sfx -> suffix tokens
 sfx_enc = tokenizer(
     [" " + suffix for suffix in suffixes],
@@ -235,9 +210,6 @@ for rep in replicas:
 ctrl_token_ids = t.full(
     (N_CONTROLLED_TOKENS,), tokenizer("!")["input_ids"][0], device=device
 )
-
-# %%
-# Optimization loop
 
 
 def compute_score_gradient(ctrl_token_ids):
@@ -306,9 +278,7 @@ def score_candidates(candidates):
     return t.cat(parts)  # compute_scores_batch returns CPU tensors by convention
 
 
-# %%
 # Checkpointing and experiment tracking setup
-
 ARTEFACT_ROOT = REPO_ROOT / ("data_local" if SMOKE else "data")
 
 
@@ -403,7 +373,6 @@ while True:
         N_TOPK_REPL = 64  # K in Top-K promising token substitutions
         BATCH_SIZE_OPTIM = 1024  # Batch size in optimization
         T_SA = 0.003  # simulated annealing temperature
-    # BATCH_SIZE_OPTIM = 1024  # breaks at cand_chunk 8
 
     # redundant since model parameters are frozen, but left in as good practice
     model.zero_grad(set_to_none=True)
@@ -472,12 +441,7 @@ while True:
         }
     )
 
-    # Update for next loop
-    # if t.max(cand_scores) > score_curr or t.:
-    ctrl_token_ids = best_candidate
-
-    # TODO: this should just be a max
-    best_cand_score = cand_scores[t.argmax(cand_scores)]
+    best_cand_score = t.max(cand_scores).item()
     if best_cand_score > score_curr or t.rand((), device=device) < t.exp(
         (best_cand_score - score_curr) / T_SA
     ):
