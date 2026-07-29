@@ -64,7 +64,7 @@ from utils import (
 )
 
 # %%
-t.manual_seed(505080078)
+t.manual_seed(20260728)
 
 load_dotenv()
 
@@ -104,6 +104,8 @@ probe_dir, meta = load_direction(DIRECTION_FILE)
 probe_dir = t.tensor(
     probe_dir / np.linalg.norm(probe_dir), device="cpu", dtype=t.float32
 )
+# probe_dir = -probe_dir  # uncomment for anti-human steering
+
 suffixes = load_prompt_suffixes(SEASON_FILE)
 
 print(f"direction: {DIRECTION_FILE}")
@@ -126,8 +128,8 @@ tokenizer.padding_side = "right"
 
 max_memory = None
 # max_memory = {i: "20GiB" for i in range(4)}
-if not SMOKE:
-    max_memory = {0: "15GiB", 1: "17GiB", 2: "20GiB", 3: "20GiB"}
+# if not SMOKE:
+#     max_memory = {0: "15GiB", 1: "17GiB", 2: "20GiB", 3: "20GiB"}
 print(f"{max_memory=}")
 
 model = AutoModelForCausalLM.from_pretrained(
@@ -158,20 +160,24 @@ else:
     D_VOCAB = model.config.vocab_size
 
 # Some algorithm hyperparameters
-N_CONTROLLED_TOKENS = 24
+# N_CONTROLLED_TOKENS = 24
+N_CONTROLLED_TOKENS = 32
 
 # Candidates scored per forward pass. Main memory/speed knob: higher packs more
 # candidates into a single batched forward (faster) but uses more activation
 # memory. Each unit of chunk costs one current-prefix-sized forward.
-# CAND_CHUNK = 5
-CAND_CHUNK = 8
+# CAND_CHUNK = 1 # fine, doesn't seem to warn
+# CAND_CHUNK = 2  # 26s per iter
+CAND_CHUNK = 4
+# CAND_CHUNK = 16
 
 if SMOKE:  # for debugging
     BATCH_SIZE_OPTIM = 32
 
 # Checkpointing / experiment tracking
 RESUME_FROM = None  # None = fresh run; else path to an existing run dir to continue
-# RESUME_FROM = "data/optimization/2026-07-13T14-11-04Z"  # None = fresh run; else path to an existing run dir to continue
+# RESUME_FROM = "data/optimization/2026-07-27_tok24_anti"  # None = fresh run; else path to an existing run dir to continue
+# RESUME_FROM = "data/optimization/2026-07-28T12-04-21Z"
 USE_WANDB = True  # attempts wandb; degrades to a no-op if import/init/log fails
 
 # Data-parallel replicas: each optimization step's candidate batch is sharded
@@ -179,7 +185,7 @@ USE_WANDB = True  # attempts wandb; degrades to a no-op if import/init/log fails
 # CLI (--replicas / --gpus-per-replica) or here.
 N_REPLICAS = args.replicas  # None => auto (n_gpus // gpus_per_replica)
 GPUS_PER_REPLICA = args.gpus_per_replica  # None => auto from model size vs card
-GPU_MEM_FRACTION = 0.9  # usable fraction of each card (headroom for activations)
+GPU_MEM_FRACTION = 0.7  # usable fraction of each card (headroom for activations)
 
 replica_groups = plan_replica_placement(
     model,
@@ -252,7 +258,6 @@ def compute_score_gradient(ctrl_token_ids):
     embed_weights = model.get_input_embeddings().weight  # (d_vocab, d_model)
     ctrl_embed = (ctrl_tokens_onehot @ embed_weights)[None]  # (1, seq, d_model)
 
-    # TODO: Check with steering-arena author their layer numbering convention for probe.
     scores = compute_scores_batch(
         trunk,
         ctrl_embed,
@@ -385,15 +390,20 @@ while True:
     if iter_idx < N_CONTROLLED_TOKENS * 4:
         N_TOPK_REPL = 8  # K in Top-K promising token substitutions
         BATCH_SIZE_OPTIM = 16  # Batch size in optimization
+        T_SA = 0.012  # simulated annealing temperature
     elif iter_idx < N_CONTROLLED_TOKENS * 8:
         N_TOPK_REPL = 16  # K in Top-K promising token substitutions
-        BATCH_SIZE_OPTIM = 32  # Batch size in optimization
-    elif iter_idx < N_CONTROLLED_TOKENS * 16:
-        N_TOPK_REPL = 32  # K in Top-K promising token substitutions
         BATCH_SIZE_OPTIM = 64  # Batch size in optimization
+        T_SA = 0.006  # simulated annealing temperature
+    elif iter_idx < N_CONTROLLED_TOKENS * 12:
+        N_TOPK_REPL = 32  # K in Top-K promising token substitutions
+        BATCH_SIZE_OPTIM = 256  # Batch size in optimization
+        T_SA = 0.003  # simulated annealing temperature
     else:
         N_TOPK_REPL = 64  # K in Top-K promising token substitutions
-        BATCH_SIZE_OPTIM = 128  # Batch size in optimization
+        BATCH_SIZE_OPTIM = 1024  # Batch size in optimization
+        T_SA = 0.003  # simulated annealing temperature
+    # BATCH_SIZE_OPTIM = 1024  # breaks at cand_chunk 8
 
     # redundant since model parameters are frozen, but left in as good practice
     model.zero_grad(set_to_none=True)
@@ -411,9 +421,9 @@ while True:
         # For each optimization slot, uniformly pick a random control position and
         # a random replacement from that position's top-k promising substitutions.
         repl_seq_idx = t.randint(
-            0, N_CONTROLLED_TOKENS, (BATCH_SIZE_OPTIM,), device=device
+            0, N_CONTROLLED_TOKENS, (BATCH_SIZE_OPTIM,), device="cpu"
         )
-        repl_topk_idxidx = t.randint(0, N_TOPK_REPL, (BATCH_SIZE_OPTIM,), device=device)
+        repl_topk_idxidx = t.randint(0, N_TOPK_REPL, (BATCH_SIZE_OPTIM,), device="cpu")
         # topk_idxidx -> it's an index into topk_idx, so idx-idx
 
         # (BATCH_SIZE_OPTIM, N_CONTROLLED_TOKENS): each candidate differs from the
@@ -463,7 +473,16 @@ while True:
     )
 
     # Update for next loop
+    # if t.max(cand_scores) > score_curr or t.:
     ctrl_token_ids = best_candidate
+
+    # TODO: this should just be a max
+    best_cand_score = cand_scores[t.argmax(cand_scores)]
+    if best_cand_score > score_curr or t.rand((), device=device) < t.exp(
+        (best_cand_score - score_curr) / T_SA
+    ):
+        ctrl_token_ids = best_candidate
+
     iter_idx += 1
 
     gc.collect()
