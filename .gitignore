@@ -16,3 +16,6 @@ data_local
 
 # Machine-local agent tooling (hardcoded paths, personal tokens) -- never committed
 local_scripts
+
+# I had some local-specific things in my CLAUDE.md, hence why it's a gitignore'd file
+CLAUDE.md
