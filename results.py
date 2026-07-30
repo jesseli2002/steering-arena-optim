@@ -36,14 +36,19 @@ def plot_max_score_vs_tokens(histories, out_path):
     plt.close(fig)
 
 
+SCHEDULE_SWITCHES = [4, 8, 12]
+
+
 def plot_score_vs_iteration(histories, out_path):
     fig, ax = plt.subplots()
     for n_tokens in sorted(histories):
         records = histories[n_tokens]
-        iters = [r["iter"] for r in records]
+        iters = [r["iter"] / n_tokens for r in records]
         scores = [r["score"] for r in records]
         ax.plot(iters, scores, label=f"{n_tokens} tokens")
-    ax.set_xlabel("Iteration")
+    for x in SCHEDULE_SWITCHES:
+        ax.axvline(x, color="grey", linestyle=":")
+    ax.set_xlabel("Iteration / number of controlled tokens")
     ax.set_ylabel("Training score")
     ax.set_title("Training score vs. iteration")
     ax.legend()
