@@ -10,6 +10,8 @@ wandb
 data
 # Artefacts for smoke-test model (only locally listed)
 data_local
+# Plots
+plots
 
 # Regenerable caches (activations, etc.) -- machine-local, never committed
 .cache

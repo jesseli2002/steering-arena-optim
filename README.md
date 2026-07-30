@@ -1,4 +1,4 @@
-# Activation Steering with Greedy Coordinate Gradients
+# [Activation Steering with Greedy Coordinate Gradients](https://jesseli2002.github.io/blog/projects/gcg-activation-steering/)
 
 I stumbled upon someone's competition ([Steering Arena](https://sohampadianeu-steering-arena.hf.space/)) to find a prompt for a LLM that maximizes how close the model's activation are to a given probe direction. When I found it, all of the submissions were probably human-written, and in actual English. I looked at this, and figured "Hey - this would be a good first project to practice the empirical AI safety things I've been learning!"
 
@@ -19,3 +19,4 @@ There's not any complicated structure here:
 - optimize_prompt.py is the actual optimization script
 - print_best.py is a simple helper to print the best or latest prompt; I use it and pipe it into `xclip` so I can copy and paste it into the Steering Arena website
 - results/ holds selected training results (by default, the optimizer outputs results to `data/`, a gitignore'd directory)
+- results.py makes the plots [in my writeup](https://jesseli2002.github.io/blog/projects/gcg-activation-steering/), putting them under plot/
