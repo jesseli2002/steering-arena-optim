@@ -93,19 +93,20 @@ def plot_score_vs_samples(histories, out_path):
         scores = [r["score"] for r in records]
         ax.plot(cum_samples, scores, label=f"{n_tokens} tokens")
 
-    fit_log_samples = np.concatenate(
-        [np.log10(cum_samples_by_tokens[n]) for n in FIT_TOKENS]
+    fit_ln_samples = np.concatenate(
+        [np.log(cum_samples_by_tokens[n]) for n in FIT_TOKENS]
     )
     fit_scores = np.concatenate(
         [[r["score"] for r in histories[n]] for n in FIT_TOKENS]
     )
-    slope, intercept = np.polyfit(fit_log_samples, fit_scores, 1)
-    fit_x = np.array([fit_log_samples.min(), fit_log_samples.max()])
+    slope, intercept = np.polyfit(fit_ln_samples, fit_scores, 1)
+    fit_x = np.array([fit_ln_samples.min(), fit_ln_samples.max()])
     fit_label = (
-        f"fit ({'+'.join(str(n) for n in FIT_TOKENS)} tokens)\nslope={slope:.4f}"
+        f"fit ({'+'.join(str(n) for n in FIT_TOKENS)} tokens)\n"
+        f"slope={slope:.4f} score/ln(samples)"
     )
     ax.plot(
-        10**fit_x,
+        np.exp(fit_x),
         slope * fit_x + intercept,
         color="grey",
         linestyle="--",
