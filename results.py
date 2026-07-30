@@ -6,6 +6,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 
 RESULTS_DIR = Path(__file__).parent / "results"
+PLOT_DIR = Path(__file__).parent / "plot"
 
 RUNS = {
     8: "2026-07-28_tok8_pro",
@@ -52,8 +53,9 @@ def plot_score_vs_iteration(histories, out_path):
 
 def main():
     histories = {n: load_history(run_dir) for n, run_dir in RUNS.items()}
-    plot_max_score_vs_tokens(histories, RESULTS_DIR / "max_score_vs_tokens.png")
-    plot_score_vs_iteration(histories, RESULTS_DIR / "score_vs_iteration.png")
+    PLOT_DIR.mkdir(exist_ok=True)
+    plot_max_score_vs_tokens(histories, PLOT_DIR / "max_score_vs_tokens.png")
+    plot_score_vs_iteration(histories, PLOT_DIR / "score_vs_iteration.png")
 
 
 if __name__ == "__main__":
