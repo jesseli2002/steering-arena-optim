@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 
 RESULTS_DIR = Path(__file__).parent / "results"
 PLOT_DIR = Path(__file__).parent / "plot"
@@ -48,6 +49,7 @@ def plot_score_vs_iteration(histories, out_path):
         ax.plot(iters, scores, label=f"{n_tokens} tokens")
     for x in SCHEDULE_SWITCHES:
         ax.axvline(x, color="grey", linestyle=":")
+    ax.xaxis.set_major_locator(mticker.MultipleLocator(2))
     ax.set_xlabel("Iteration / number of controlled tokens")
     ax.set_ylabel("Training score")
     ax.set_title("Training score vs. iteration")
