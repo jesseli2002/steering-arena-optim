@@ -17,6 +17,7 @@ At a high level, each iteration of the optimization algorithm works like this (A
 There's not any complicated structure here:
 - steering-arena is included as a git submodule, to get access to the underlying data (probe directions & test prompts)
 - optimize_prompt.py is the actual optimization script
+    - Set the environment variable HF_TOKEN (or put it in a .env file) to be a personal access token for HuggingFace, so that the Olmo model weights can get downloaded.
 - print_best.py is a simple helper to print the best or latest prompt; I use it and pipe it into `xclip` so I can copy and paste it into the Steering Arena website
 - results/ holds selected training results (by default, the optimizer outputs results to `data/`, a gitignore'd directory)
 - results.py makes the plots [in my writeup](https://jesseli2002.github.io/blog/projects/gcg-activation-steering/), putting them under plot/
