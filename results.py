@@ -71,9 +71,6 @@ def plot_score_vs_iteration(histories, out_path):
     plt.close(fig)
 
 
-FIT_TOKENS = [16, 32]
-
-
 def cumulative_samples(records, n_tokens):
     cum_samples = []
     total = 0
@@ -84,6 +81,8 @@ def cumulative_samples(records, n_tokens):
 
 
 def plot_score_vs_samples(histories, out_path):
+    FIT_TOKENS = [16, 32]
+
     fig, ax = plt.subplots()
 
     cum_samples_by_tokens = {}
