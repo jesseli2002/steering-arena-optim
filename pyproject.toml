@@ -1,0 +1,21 @@
+[project]
+name = "steering-arena-optim"
+version = "0.1.0"
+description = "Prompt optimization for Steering Arena"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "torch",
+    "transformers==5.10.2",
+    "jaxtyping",
+    "python-dotenv",
+    "matplotlib",
+    "pytest",
+]
+
+[tool.setuptools]
+py-modules = []
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
