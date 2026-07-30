@@ -40,6 +40,18 @@ def plot_max_score_vs_tokens(histories, out_path):
 SCHEDULE_SWITCHES = [4, 8, 12]
 
 
+def batch_size_for_iter(iter_idx, n_tokens):
+    # Mirrors the BATCH_SIZE_OPTIM schedule in optimize_prompt.py.
+    if iter_idx < n_tokens * 4:
+        return 16
+    elif iter_idx < n_tokens * 8:
+        return 64
+    elif iter_idx < n_tokens * 12:
+        return 256
+    else:
+        return 1024
+
+
 def plot_score_vs_iteration(histories, out_path):
     fig, ax = plt.subplots()
     for n_tokens in sorted(histories):
@@ -58,11 +70,32 @@ def plot_score_vs_iteration(histories, out_path):
     plt.close(fig)
 
 
+def plot_score_vs_samples(histories, out_path):
+    fig, ax = plt.subplots()
+    for n_tokens in sorted(histories):
+        records = histories[n_tokens]
+        cum_samples = []
+        total = 0
+        for r in records:
+            total += batch_size_for_iter(r["iter"], n_tokens)
+            cum_samples.append(total)
+        scores = [r["score"] for r in records]
+        ax.plot(cum_samples, scores, label=f"{n_tokens} tokens")
+    ax.set_xscale("log")
+    ax.set_xlabel("Cumulative samples tried")
+    ax.set_ylabel("Training score")
+    ax.set_title("Training score vs. cumulative samples tried")
+    ax.legend()
+    fig.savefig(out_path)
+    plt.close(fig)
+
+
 def main():
     histories = {n: load_history(run_dir) for n, run_dir in RUNS.items()}
     PLOT_DIR.mkdir(exist_ok=True)
     plot_max_score_vs_tokens(histories, PLOT_DIR / "max_score_vs_tokens.png")
     plot_score_vs_iteration(histories, PLOT_DIR / "score_vs_iteration.png")
+    plot_score_vs_samples(histories, PLOT_DIR / "score_vs_samples.png")
 
 
 if __name__ == "__main__":
