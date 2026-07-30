@@ -21,3 +21,5 @@ There's not any complicated structure here:
 - print_best.py is a simple helper to print the best or latest prompt; I use it and pipe it into `xclip` so I can copy and paste it into the Steering Arena website
 - results/ holds selected training results (by default, the optimizer outputs results to `data/`, a gitignore'd directory)
 - results.py makes the plots [in my writeup](https://jesseli2002.github.io/blog/projects/gcg-activation-steering/), putting them under plot/
+
+Dependencies listed in the pyproject.toml; run `pip install -e .` in a virtual environment, in this repo, to install dependencies.
