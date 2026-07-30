@@ -101,12 +101,15 @@ def plot_score_vs_samples(histories, out_path):
     )
     slope, intercept = np.polyfit(fit_log_samples, fit_scores, 1)
     fit_x = np.array([fit_log_samples.min(), fit_log_samples.max()])
+    fit_label = (
+        f"fit ({'+'.join(str(n) for n in FIT_TOKENS)} tokens)\nslope={slope:.4f}"
+    )
     ax.plot(
         10**fit_x,
         slope * fit_x + intercept,
-        color="black",
+        color="grey",
         linestyle="--",
-        label=f"fit ({'+'.join(str(n) for n in FIT_TOKENS)} tokens)",
+        label=fit_label,
     )
 
     ax.set_xscale("log")
