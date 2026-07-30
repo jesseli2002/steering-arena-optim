@@ -5,6 +5,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
+import numpy as np
 
 RESULTS_DIR = Path(__file__).parent / "results"
 PLOT_DIR = Path(__file__).parent / "plot"
@@ -70,17 +71,45 @@ def plot_score_vs_iteration(histories, out_path):
     plt.close(fig)
 
 
+FIT_TOKENS = [16, 32]
+
+
+def cumulative_samples(records, n_tokens):
+    cum_samples = []
+    total = 0
+    for r in records:
+        total += batch_size_for_iter(r["iter"], n_tokens)
+        cum_samples.append(total)
+    return cum_samples
+
+
 def plot_score_vs_samples(histories, out_path):
     fig, ax = plt.subplots()
+
+    cum_samples_by_tokens = {}
     for n_tokens in sorted(histories):
         records = histories[n_tokens]
-        cum_samples = []
-        total = 0
-        for r in records:
-            total += batch_size_for_iter(r["iter"], n_tokens)
-            cum_samples.append(total)
+        cum_samples = cumulative_samples(records, n_tokens)
+        cum_samples_by_tokens[n_tokens] = cum_samples
         scores = [r["score"] for r in records]
         ax.plot(cum_samples, scores, label=f"{n_tokens} tokens")
+
+    fit_log_samples = np.concatenate(
+        [np.log10(cum_samples_by_tokens[n]) for n in FIT_TOKENS]
+    )
+    fit_scores = np.concatenate(
+        [[r["score"] for r in histories[n]] for n in FIT_TOKENS]
+    )
+    slope, intercept = np.polyfit(fit_log_samples, fit_scores, 1)
+    fit_x = np.array([fit_log_samples.min(), fit_log_samples.max()])
+    ax.plot(
+        10**fit_x,
+        slope * fit_x + intercept,
+        color="black",
+        linestyle="--",
+        label=f"fit ({'+'.join(str(n) for n in FIT_TOKENS)} tokens)",
+    )
+
     ax.set_xscale("log")
     ax.set_xlabel("Cumulative samples tried")
     ax.set_ylabel("Training score")
